@@ -1,0 +1,10 @@
+.git
+node_modules
+build
+dist
+.cache
+.data
+.env*
+coverage
+test-results
+playwright-report

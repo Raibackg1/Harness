@@ -1,0 +1,16 @@
+{
+  "name": "harness-workspace-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "http-proxy": "1.18.1",
+    "jose": "6.2.12"
+  },
+  "scripts": {
+    "test": "node --test *.test.mjs"
+  },
+  "devDependencies": {
+    "ws": "8.22.0"
+  }
+}
