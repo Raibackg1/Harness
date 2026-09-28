@@ -44,8 +44,9 @@ Cifra la exportación, limita el acceso y verifica su checksum. Configura expira
 - `provisioned` se registra antes de crear recursos para no perder la limpieza de un aprovisionamiento parcial.
 - Si el namespace está terminando, la fila se conserva. No borrar a mano esa fila antes de revisar recursos/PV y finalizers.
 - Si se desconecta el clúster, un proyecto provisionado no se elimina silenciosamente de la base.
+- El worker se niega a arrancar si las políticas de admisión del límite no están instaladas (`CrashLoopBackOff` con `Admission boundary incomplete`). Las causas posibles son reales y distintas: faltan los manifiestos de `infra/k8s/admission.yaml`, se renombró una política o su binding, alguien cambió `failurePolicy` o `validationActions`, o el service account perdió el `get` sobre `admissionregistration.k8s.io`. Verificar con `kubectl get validatingadmissionpolicies,validatingadmissionpolicybindings`; no "arreglar" el arranque quitando la comprobación.
 
-Revisar eventos del proyecto desde la UI; para investigación operativa, usar logs de worker y `kubectl describe` con acceso de operador. No quitar finalizers indiscriminadamente.
+La UI del proyecto muestra solo `reason` y un mensaje propio de la plataforma: el `message` crudo de un evento nombra clases de almacenamiento, nodos y detalles del CNI que no le corresponden al miembro. Para investigación operativa, usar `kubectl -n hc-<id> describe events/pod`, los logs del worker y `GET /api/projects/:id/events` no es la fuente para depurar infraestructura. No quitar finalizers indiscriminadamente.
 
 ## Observabilidad pendiente de instalar
 

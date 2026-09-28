@@ -18,7 +18,7 @@
     "check": "npm run typecheck && npm test && npm run build",
     "worker": "tsx src/server/worker-entry.ts",
     "start:worker": "node build/server/worker-entry.js",
-    "test:gateway": "npm test --prefix runtime",
+    "test:gateway": "npm ci --prefix runtime && npm test --prefix runtime",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },

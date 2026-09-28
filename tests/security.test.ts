@@ -35,7 +35,25 @@ describe("security primitives", () => {
   );
   it("rejects an insecure production configuration", () => {
     expect(() => loadConfig({ NODE_ENV: "production" })).toThrow("DATABASE_URL");
-    expect(() => loadConfig({ KUBERNETES_ENABLED: "true" })).toThrow();
+    expect(() => loadConfig({ KUBERNETES_ENABLED: "true" })).toThrow("APP_ORIGIN");
+  });
+  it("requires an https control origin before workspaces are reachable", () => {
+    const c = {
+      KUBERNETES_ENABLED: "true",
+      WORKSPACE_DOMAIN: "workspaces.other.net",
+      WORKSPACE_IMAGE: "registry.local/x@sha256:" + "ab".repeat(32),
+      ENCRYPTION_KEY: "ab".repeat(32),
+    };
+    // The workspace gateway validates the ticket origin and issues Secure cookies, so an
+    // absent or http origin must fail at startup instead of crash-looping a workspace.
+    expect(() => loadConfig({ ...c, APP_ORIGIN: undefined })).toThrow("APP_ORIGIN");
+    expect(() => loadConfig({ ...c, APP_ORIGIN: "http://cloud.company.com" })).toThrow("HTTPS");
+    expect(() => loadConfig({ ...c, APP_ORIGIN: "https://cloud.other.net" })).toThrow(
+      "isolated domain",
+    );
+    expect(loadConfig({ ...c, APP_ORIGIN: "https://cloud.company.com" }).APP_ORIGIN).toBe(
+      "https://cloud.company.com",
+    );
   });
   it("rejects a mutable runtime image and non-sandboxed runtime", () => {
     const c = {

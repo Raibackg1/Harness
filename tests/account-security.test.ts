@@ -3,7 +3,7 @@ import { createApp } from "../src/server/app";
 import { createDatabase, migrate, type Database } from "../src/server/db";
 import { loadConfig } from "../src/server/config";
 import { authenticator, acceptedCounter } from "../src/server/mfa";
-import { decrypt } from "../src/server/security";
+import { decrypt, hash } from "../src/server/security";
 let db: Database,
   app: Awaited<ReturnType<typeof createApp>>,
   owner = "",
@@ -281,5 +281,57 @@ describe("TOTP time validation", () => {
     expect(acceptedCounter(s, code, counter!, now)).toBe(null);
     expect(acceptedCounter(s, code, -1, now + 90000)).toBe(null);
     expect(acceptedCounter(s, "123", -1, now)).toBe(null);
+  });
+});
+
+describe("login attempt budget", () => {
+  const email = "owner@security.test";
+  const attempts = (body: Record<string, string>) => call("POST", "/api/auth/login", body, "");
+  const counter = async (key: string) =>
+    (
+      await db.query("SELECT coalesce(max(count),0)::int AS n FROM auth_attempts WHERE key=$1", [
+        hash(key),
+      ])
+    ).rows[0].n;
+  it("throttles guessing without locking the legitimate owner out", async () => {
+    for (let i = 0; i < 12; i++)
+      expect((await attempts({ email, password: "not-the-password" })).statusCode).toBe(401);
+    // Past the budget a wrong credential is throttled...
+    expect((await attempts({ email, password: "not-the-password" })).statusCode).toBe(429);
+    expect(await counter(`login:${email}`)).toBe(13);
+    // ...while the owner still signs in and resets the account counter.
+    expect((await attempts({ email, password })).statusCode).toBe(200);
+    expect(await counter(`login:${email}`)).toBe(0);
+    // The shared per-IP budget is not laundered by that success, so spraying stays expensive.
+    expect(
+      (await db.query("SELECT max(count)::int AS n FROM auth_attempts")).rows[0].n,
+    ).toBeGreaterThanOrEqual(14);
+    expect((await attempts({ email, password: "not-the-password" })).statusCode).toBe(401);
+  });
+  it("never lets a spent budget block a correct password plus a valid code", async () => {
+    const pending = (await call("POST", "/api/account/mfa/setup", { password }, owner)).json()
+      .secret;
+    const confirmed = await call(
+      "POST",
+      "/api/account/mfa/confirm",
+      { password, code: authenticator(pending).generate() },
+      owner,
+    );
+    expect(confirmed.statusCode).toBe(200);
+    owner = session(confirmed);
+    for (let i = 0; i < 12; i++)
+      expect((await attempts({ email, password, code: "000000" })).statusCode).toBe(401);
+    expect((await attempts({ email, password, code: "000000" })).statusCode).toBe(429);
+    // A fresh window: the code consumed while enrolling is replay-proof by design.
+    expect(
+      (
+        await attempts({
+          email,
+          password,
+          code: authenticator(pending).generate({ timestamp: Date.now() + 30000 }),
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(await counter(`login:${email}`)).toBe(0);
   });
 });

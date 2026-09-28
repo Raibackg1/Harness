@@ -77,7 +77,11 @@ Probar con impersonación del service account que:
 
 Estos manifiestos **no han sido validados por un API server real aquí**. Corregir cualquier error CEL/schema antes de instalar el RBAC. Un nombre de política en Git no protege el clúster hasta que el binding se ha instalado y probado.
 
+El worker **no arranca sin comprobar esta frontera**: al iniciar lee las tres `ValidatingAdmissionPolicy` y sus tres bindings, y se niega a reconciliar si falta alguno, si `failurePolicy` no es `Fail` o si un binding no aplica `Deny` o apunta a otra política. `POST /api/infrastructure/check` (panel de administración) devuelve el mismo informe. Los dos service accounts necesitan únicamente `get` sobre `admissionregistration.k8s.io`, incluido en `infra/k8s/rbac.yaml`; nunca les des permisos de escritura ahí, o el worker podría aflojar su propia frontera.
+
 ## 5. Instalar el plano de control
+
+Antes de aplicar, reemplaza en `infra/k8s/config.yaml` el digest de la imagen del workspace y los nombres de `STORAGE_CLASS`/`INGRESS_CLASS`/`TLS_ISSUER`, y en `infra/k8s/networking.yaml` los dos marcadores `REPLACE_WITH_API_SERVER_CIDR` y `REPLACE_WITH_POSTGRES_CIDR` por las CIDR reales del API server y de PostgreSQL. No son CIDR válidos a propósito: el `dry-run` falla hasta que los resuelvas, porque una regla de egreso sin `to:` dejaría al plano de control como proxy de salida para quien comprometa un contenedor. `APP_ORIGIN` es obligatorio en modo Kubernetes y debe ser `https://`: el gateway valida el origen de cada ticket y emite cookies `Secure`, así que un origen `http://` se rechaza al arrancar la API.
 
 ```bash
 kubectl apply --dry-run=server -k infra/k8s

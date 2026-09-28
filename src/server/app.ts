@@ -175,15 +175,30 @@ export async function createApp(config: Config, db: Database, logging = true) {
     );
   };
   // Persistent, replica-independent limits for credential endpoints. No dependence on spoofable proxy headers.
-  const authBudget = async (key: string, limit = 12) => {
+  const countAttempt = async (key: string) => {
     const {
       rows: [r],
     } = await db.query(
       `INSERT INTO auth_attempts(key,count,reset_at) VALUES ($1,1,now()+interval '15 minutes') ON CONFLICT(key) DO UPDATE SET count=CASE WHEN auth_attempts.reset_at<now() THEN 1 ELSE auth_attempts.count+1 END, reset_at=CASE WHEN auth_attempts.reset_at<now() THEN now()+interval '15 minutes' ELSE auth_attempts.reset_at END RETURNING count`,
       [hash(key)],
     );
-    if (r.count > limit) throw new HttpError(429, "Demasiados intentos. Espera 15 minutos.");
+    return r.count as number;
   };
+  const budgetSpent = async (key: string, limit = 12) => (await countAttempt(key)) > limit;
+  const authBudget = async (key: string, limit = 12) => {
+    if (await budgetSpent(key, limit))
+      throw new HttpError(429, "Demasiados intentos. Espera 15 minutos.");
+  };
+  // Only the account-scoped key is cleared after a success, so a valid session cannot be
+  // used to launder the shared per-IP budget while guessing other accounts' passwords.
+  const clearBudget = (sql: Sql, key: string) =>
+    sql.query("DELETE FROM auth_attempts WHERE key=$1", [hash(key)]);
+  // Throttling must never lock out the legitimate owner: past the account budget only
+  // failed attempts are rejected, while a correct credential clears the counter and proceeds.
+  const rejected = (spent: boolean, message: string) =>
+    spent
+      ? new HttpError(429, "Demasiados intentos. Espera 15 minutos.")
+      : new HttpError(401, message);
   app.get("/healthz", async () => ({ ok: true }));
   app.get("/readyz", async () => {
     await assertEncryptionKey(db, config.ENCRYPTION_KEY);
@@ -250,14 +265,14 @@ export async function createApp(config: Config, db: Database, logging = true) {
     const input = z
       .object({ email, password: z.string().max(128), code: z.string().max(32).default("") })
       .parse(req.body);
-    await authBudget(`login:${input.email}`);
+    const spent = await budgetSpent(`login:${input.email}`);
     await authBudget(`login-ip:${req.ip}`, 100);
     const {
       rows: [candidate],
     } = await db.query<Account>("SELECT * FROM users WHERE email=$1", [input.email]);
     const valid = await verifyPassword(input.password, candidate?.password_hash || dummyHash);
     if (!candidate || !valid || candidate.suspended_at)
-      throw new HttpError(401, "Correo, contraseña o acceso a la cuenta incorrectos.");
+      throw rejected(spent, "Correo, contraseña o acceso a la cuenta incorrectos.");
     return db.transaction(async (tx) => {
       const {
         rows: [u],
@@ -268,7 +283,8 @@ export async function createApp(config: Config, db: Database, logging = true) {
         throw new HttpError(401, "Vuelve a iniciar sesión.");
       if (u.mfa_secret && !input.code) return { mfaRequired: true };
       if (!(await consumeFactor(tx, config, u, input.code)))
-        throw new HttpError(401, "Código de segundo factor inválido, vencido o ya utilizado.");
+        throw rejected(spent, "Código de segundo factor inválido, vencido o ya utilizado.");
+      await clearBudget(tx, `login:${input.email}`);
       await session(u as User, reply, req, tx);
       await audit(tx, u.id, "account.login");
       return {
@@ -649,13 +665,22 @@ export async function createApp(config: Config, db: Database, logging = true) {
   app.post("/api/infrastructure/check", { preHandler: owner }, async () => {
     if (config.KUBERNETES_ENABLED !== "true")
       throw new HttpError(503, "No hay un clúster conectado. Sigue la guía de instalación.");
-    const version = await k8s.check();
+    const [version, boundaries] = await Promise.all([k8s.check(), k8s.sandboxBoundaries()]);
+    if (!boundaries.ok)
+      throw new HttpError(
+        503,
+        `Falta la frontera de admisión del worker: ${boundaries.checks
+          .filter((c) => !c.ok)
+          .map((c) => `${c.name} (${c.problems.join("; ")})`)
+          .join(", ")}. Instala infra/k8s/admission.yaml antes de aceptar entornos.`,
+      );
     return {
       ok: true,
       version: version.gitVersion,
       checkedAt: new Date().toISOString(),
+      boundaries: boundaries.checks,
       notice:
-        "La API y RuntimeClass responden. Esto no valida el aislamiento, CNI, DNS ni certificados.",
+        "La API, RuntimeClass y las políticas de admisión responden. Esto no valida el aislamiento, CNI, DNS ni certificados.",
     };
   });
   app.setErrorHandler((error, req, reply) => {

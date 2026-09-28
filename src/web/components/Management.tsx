@@ -234,7 +234,7 @@ export function InfrastructureView({
               try {
                 const result = await api("/infrastructure/check", send("POST"));
                 setCheck(result);
-                notify("La API y RuntimeClass responden.");
+                notify("La API, RuntimeClass y las políticas de admisión responden.");
               } catch (e) {
                 notify((e as Error).message, true);
               } finally {
@@ -248,6 +248,9 @@ export function InfrastructureView({
           {check && (
             <Notice tone="success">
               Kubernetes {check.version}
+              <br />
+              Frontera del worker: {check.boundaries?.length || 0} políticas de admisión en modo
+              Deny
               <br />
               {check.notice}
               <br />
