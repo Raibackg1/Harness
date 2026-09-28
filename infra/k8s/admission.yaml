@@ -1,0 +1,88 @@
+# Kubernetes >= 1.30. Install and verify these Deny bindings before enabling the worker.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: harness-worker-namespace-boundary
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["namespaces"]
+  matchConditions:
+    - name: worker-only
+      expression: "request.userInfo.username == 'system:serviceaccount:harness-system:harness-worker'"
+  validations:
+    - expression: "request.name.matches('^hc-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')"
+      message: Worker can only manage project namespace names.
+    - expression: "request.operation == 'DELETE' ? oldObject.metadata.labels['app.kubernetes.io/managed-by'] == 'harness-cloud' : object.metadata.labels['app.kubernetes.io/managed-by'] == 'harness-cloud' && object.metadata.labels['pod-security.kubernetes.io/enforce'] == 'restricted'"
+      message: Project ownership and restricted pod security are mandatory.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: harness-worker-namespace-boundary
+spec:
+  policyName: harness-worker-namespace-boundary
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: harness-worker-resource-boundary
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["", "apps", "networking.k8s.io"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["*", "*/*"]
+        scope: Namespaced
+  matchConditions:
+    - name: worker-only
+      expression: "request.userInfo.username == 'system:serviceaccount:harness-system:harness-worker'"
+  validations:
+    - expression: "request.namespace.startsWith('hc-') && namespaceObject != null && namespaceObject.metadata.labels['app.kubernetes.io/managed-by'] == 'harness-cloud'"
+      message: Worker cannot modify the control plane or other namespaces.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: harness-worker-resource-boundary
+spec:
+  policyName: harness-worker-resource-boundary
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: harness-workspace-sandbox
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        app.kubernetes.io/managed-by: harness-cloud
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  validations:
+    - expression: "has(object.spec.runtimeClassName) && object.spec.runtimeClassName in ['gvisor', 'kata']"
+      message: Workspace pods must use gVisor or Kata.
+    - expression: "has(object.spec.automountServiceAccountToken) && object.spec.automountServiceAccountToken == false"
+      message: No cluster credentials in workspace pods.
+    - expression: "object.spec.containers.all(c, has(c.securityContext) && has(c.securityContext.readOnlyRootFilesystem) && c.securityContext.readOnlyRootFilesystem == true)"
+      message: Workspace root filesystems must be read-only.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: harness-workspace-sandbox
+spec:
+  policyName: harness-workspace-sandbox
+  validationActions: [Deny]

@@ -1,0 +1,33 @@
+name: PostgreSQL integration
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  postgres:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        suite: [api, account-security, runtime-policy, encryption-maintenance]
+    services:
+      postgres:
+        image: postgres:17.6
+        env:
+          POSTGRES_USER: harness_test
+          POSTGRES_PASSWORD: ephemeral-ci-password
+          POSTGRES_DB: harness_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U harness_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22", cache: npm }
+      - run: npm ci
+      - run: npx vitest run tests/${{ matrix.suite }}.test.ts
+        env:
+          TEST_DATABASE_URL: postgresql://harness_test:ephemeral-ci-password@127.0.0.1:5432/harness_test

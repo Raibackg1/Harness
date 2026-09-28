@@ -1,0 +1,4 @@
+# Separate opt-outs: OTel is disabled through the environment as well.
+- id: session-log-deepseek
+  config:
+    enabled: false

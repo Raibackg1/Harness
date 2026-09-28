@@ -1,0 +1,10 @@
+node_modules/
+build/
+dist/
+.cache/
+.data/
+coverage/
+test-results/
+playwright-report/
+package-lock.json
+runtime/package-lock.json
