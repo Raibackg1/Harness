@@ -80,6 +80,15 @@ export async function migrate(db: Database) {
       await tx.query("INSERT INTO encryption_state(id) VALUES(1)");
       await tx.query("UPDATE schema_migrations SET version=3 WHERE id=1");
     }
+    if (row.version < 4) {
+      // Release history of the versioned initial files, captured when a project is
+      // published. Secret VALUES are never copied here: only the names that existed.
+      await tx.query(
+        "CREATE TABLE project_releases (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE, note text NOT NULL DEFAULT '', files jsonb NOT NULL, secret_names jsonb NOT NULL DEFAULT '[]'::jsonb, created_at timestamptz NOT NULL DEFAULT now())",
+      );
+      await tx.query("CREATE INDEX releases_project ON project_releases(project_id,id DESC)");
+      await tx.query("UPDATE schema_migrations SET version=4 WHERE id=1");
+    }
   });
 }
 const schema = `

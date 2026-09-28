@@ -105,7 +105,7 @@ export function Modal({
   );
 }
 export function TemplateIcon({ type, size = 22 }: { type: TemplateId; size?: number }) {
-  const Icon = { react: Atom, node: Hexagon, python: Braces, html: Code2 }[type];
+  const Icon = { react: Atom, node: Hexagon, python: Braces, fastapi: Braces, html: Code2 }[type];
   return (
     <span className={`template-icon ${type}`}>
       <Icon size={size} />

@@ -33,9 +33,9 @@ try {
     const {
       rows: [schema],
     } = await db.query("SELECT version FROM schema_migrations WHERE id=1");
-    if (schema?.version !== 3)
+    if (!schema || schema.version < 3)
       throw new EncryptionMaintenanceError(
-        "La herramienta requiere esquema v3. Aplica las migraciones de esta versión primero.",
+        "La herramienta requiere esquema v3 o superior. Aplica las migraciones de esta versión primero.",
       );
     const result = await rotateEncryptionKey(db, {
       oldKey,

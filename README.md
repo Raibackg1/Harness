@@ -12,8 +12,10 @@ Una plataforma autohospedada de desarrollo en el navegador, con un plano de cont
 - Iniciar y cerrar sesión, editar el perfil y cambiar la contraseña revocando las sesiones anteriores.
 - Activar segundo factor TOTP con QR local, diez códigos de recuperación de un solo uso y prevención de reutilización. Consultar y revocar sesiones de la cuenta.
 - Suspender/reactivar miembros con reautenticación del administrador: revoca sesiones e invitaciones y solicita detener/despublicar sus entornos. La detención física necesita al worker.
-- Crear proyectos **privados por propietario** con plantillas ejecutables de React/Vite, Node.js, Python o HTML/CSS.
+- Crear proyectos **privados por propietario** con plantillas ejecutables de React/Vite, Node.js, Python, FastAPI o HTML/CSS. Las plantillas son el punto de partida, no un catálogo de lenguajes: soportar otro lenguaje significa agregar su receta en `src/shared/templates.ts` y su imagen en el Runtime (`sandbox` 1 CPU / 1 GiB y comando de verificación configurables, con límite de 450 KB por proyecto). El entorno no ejecuta un `Dockerfile` arbitrario subido por el usuario.
 - Editar y crear archivos iniciales, con control de versiones para impedir sobrescrituras concurrentes; descargar un ZIP real.
+- **Exportar un proyecto para que corra fuera de la plataforma**: `GET /api/projects/:id/bundle` entrega ZIP con el código, un `Dockerfile` y un `docker-compose.yml` generados, `.env.example` con solo los _nombres_ de las variables y un `harness-export.json` que documenta puerto, comando, límites y recursos usados. Nunca incluye valores de secretos ni la base de datos. `POST /api/projects/:id/import` acepta ese mismo tipo de ZIP para entrar sin depender de un forjador.
+- **Versiones de código**: cada publicación deja una instantánea en `project_releases` (se conservan 20), se pueden crear versiones manuales y restaurarlas con verificación de estado —nunca reemplaza código activo en silencio.
 - Buscar, ordenar, archivar, renombrar y eliminar proyectos con confirmación.
 - Guardar variables de entorno cifradas con AES-256-GCM cuando se configura la clave maestra. La API nunca devuelve su valor.
 - Consultar un historial persistente de acciones y el estado real de configuración de la infraestructura.
@@ -143,10 +145,11 @@ Las definiciones de CI incluyen construcción de imágenes y una suite con Postg
 - [Rotación segura de la clave maestra](docs/KEY-ROTATION.md)
 - [API del plano de control](docs/API.md)
 - [Condiciones de salida comercial](docs/RELEASE-GATES.md)
+- [Matriz de brechas frente a la plataforma de referencia](docs/REPLIT-GAP.md): qué existe, qué no, y qué costaría cerrarlo
 - [Dependencias y licencias de terceros](docs/THIRD_PARTY.md)
 
 ## Alcance que no debe confundirse con una entrega comercial completa
 
-No se implementan facturación, pagos, suscripciones, marketplace, colaboración simultánea, roles compartidos por proyecto, SSO/passkeys, verificación y recuperación por correo, bases de datos gestionadas para las apps, un pipeline de despliegue de producción independiente, dominios personalizados de clientes, cuotas por consumo, idle shutdown, moderación antiabuso ni un SLO contratado. No hay botones que finjan estas funciones.
+No se implementan facturación, pagos, suscripciones, marketplace, colaboración simultánea en vivo (edición concurrente CRDT), roles compartidos por proyecto, SSO/passkeys, verificación y recuperación por correo, bases de datos gestionadas para las apps, un pipeline de despliegue de producción independiente, dominios personalizados de clientes, cuotas por consumo, idle shutdown, moderación antiabuso ni un SLO contratado. No hay botones que finjan estas funciones. El bundle de exportación tampoco incluye `pg_dump` de la base del proyecto: la portabilidad hoy cubre código, entorno y nombres de variables.
 
 El registro público está cerrado deliberadamente. Permitir clientes no confiables exige completar [RELEASE-GATES.md](docs/RELEASE-GATES.md), la operación y las funciones comerciales que decidas ofrecer. No se puede afirmar honestamente que un sistema sea apto para venta solo porque el código compile o tenga un panel terminado.
