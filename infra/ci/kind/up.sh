@@ -70,7 +70,17 @@ EOF
 echo "::endgroup::"
 
 echo "::group::images by digest"
-digest() { docker inspect -f '{{index .RepoDigests 0}}' "$1" | sed 's/.*@//'; }
+# Ask the registry, not the local image store: after a push, docker can report the upstream
+# multi-arch index digest while the registry serves a different, single-platform manifest.
+digest() {
+  local d
+  d=$(curl -fsSI \
+    -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json" \
+    "http://127.0.0.1:${REG_PORT}/v2/$1/manifests/$2" |
+    tr -d '\r' | awk -F': ' 'tolower($1)=="docker-content-digest"{print $2}')
+  [ -n "$d" ] || { echo "registry has no manifest for $1:$2" >&2; exit 1; }
+  echo "$d"
+}
 docker build -q -t "localhost:${REG_PORT}/harness-control:e2e" .
 docker build -q -f runtime/Dockerfile -t "localhost:${REG_PORT}/harness-workspace:e2e" .
 docker push -q "localhost:${REG_PORT}/harness-control:e2e"
@@ -78,9 +88,9 @@ docker push -q "localhost:${REG_PORT}/harness-workspace:e2e"
 docker pull -q postgres:17.6
 docker tag postgres:17.6 "localhost:${REG_PORT}/postgres:17.6"
 docker push -q "localhost:${REG_PORT}/postgres:17.6"
-control_digest=$(digest "localhost:${REG_PORT}/harness-control:e2e")
-workspace_digest=$(digest "localhost:${REG_PORT}/harness-workspace:e2e")
-database_digest=$(digest "localhost:${REG_PORT}/postgres:17.6")
+control_digest=$(digest harness-control e2e)
+workspace_digest=$(digest harness-workspace e2e)
+database_digest=$(digest postgres 17.6)
 echo "control ${control_digest}  workspace ${workspace_digest}"
 echo "::endgroup::"
 
