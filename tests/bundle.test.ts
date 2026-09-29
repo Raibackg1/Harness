@@ -56,6 +56,28 @@ describe("runnable export bundle", () => {
         "# Cárgalos en el entorno de ejecución y, si usas compose, copia este archivo a .env.\nDATABASE_URL=\nPROVIDER_KEY=\n",
     );
   });
+  it("adds an empty PostgreSQL to compose when the project has a database, without a password", () => {
+    const { files } = bundleExtras({
+      name: "Con base",
+      template: "node",
+      files: { "index.js": "1" },
+      secretNames: ["API_KEY"],
+      database: true,
+    });
+    const compose = files["docker-compose.yml"];
+    expect(compose).toContain("image: postgres:17.6");
+    expect(compose).toContain("DATABASE_URL: postgresql://app:${POSTGRES_PASSWORD}@db:5432/app");
+    expect(compose).toContain("${POSTGRES_PASSWORD:?");
+    expect(files[".env.example"]).toContain("POSTGRES_PASSWORD=\n");
+    expect(JSON.parse(files["harness-export.json"]).database).toEqual({
+      engine: "postgresql",
+      version: "17",
+      data: "not exported",
+    });
+    const plain = bundleExtras({ name: "x", template: "node", files: {}, secretNames: [] }).files;
+    expect(plain["docker-compose.yml"]).not.toContain("postgres");
+    expect(JSON.parse(plain["harness-export.json"]).database).toBeNull();
+  });
   it("falls back to a generic recipe for an unknown template", () => {
     const { files } = bundleExtras({ ...project, template: "cobol" });
     expect(files["Dockerfile"]).toContain("node:22-bookworm-slim");

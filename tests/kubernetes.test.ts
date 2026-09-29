@@ -208,3 +208,71 @@ describe("cluster events surfaced to project members", () => {
     expect(publicEventMessage(undefined)).toContain("administradora");
   });
 });
+describe("optional PostgreSQL per project", () => {
+  const withDb = loadConfig({
+    KUBERNETES_ENABLED: "true",
+    ENCRYPTION_KEY: "ab".repeat(32),
+    APP_ORIGIN: "https://cloud.company.com",
+    WORKSPACE_DOMAIN: "runtime.sandbox.net",
+    WORKSPACE_IMAGE: "image@sha256:" + "ab".repeat(32),
+    DATABASE_IMAGE: "postgres@sha256:" + "cd".repeat(32),
+  });
+  const resources = workspaceResources(
+    withDb,
+    { ...project, database: true },
+    { "index.html": "<h1>Hi</h1>" },
+    {},
+    "gateway-key",
+    "app-db-password",
+  );
+  const byName = (kind: string, name: string) =>
+    resources.find((r) => r.body.kind === kind && r.body.metadata.name === name)!.body;
+  it("runs the database in the same sandbox rules as the workspace", () => {
+    const pod = byName("Deployment", "database").spec.template.spec;
+    expect(pod.runtimeClassName).toBe("gvisor");
+    expect(pod.automountServiceAccountToken).toBe(false);
+    expect(pod.securityContext.runAsNonRoot).toBe(true);
+    const c = pod.containers[0];
+    expect(c.image).toBe(withDb.DATABASE_IMAGE);
+    expect(c.securityContext).toMatchObject({
+      allowPrivilegeEscalation: false,
+      readOnlyRootFilesystem: true,
+      capabilities: { drop: ["ALL"] },
+    });
+    expect(byName("PersistentVolumeClaim", "database").spec.resources.requests.storage).toBe("2Gi");
+  });
+  it("never lets the database join the workspace Service or the project's pod label", () => {
+    const labels = byName("Deployment", "database").spec.template.metadata.labels;
+    expect(labels["harness.cloud/project"]).toBeUndefined();
+    const workspaceSelector = byName("Service", "workspace").spec.selector;
+    expect(Object.entries(workspaceSelector).every(([k, v]) => labels[k] === v)).toBe(false);
+  });
+  it("hands the workspace a DATABASE_URL from a Secret and allows 5432 only inside the namespace", () => {
+    expect(Buffer.from(byName("Secret", "database").data.password, "base64").toString()).toBe(
+      "app-db-password",
+    );
+    const env = byName("Deployment", "workspace").spec.template.spec.containers[0].env;
+    expect(env.find((e: any) => e.name === "DATABASE_URL").valueFrom.secretKeyRef).toEqual({
+      name: "database",
+      key: "url",
+    });
+    const policy = resources.find((r) => r.body.kind === "NetworkPolicy")!.body.spec;
+    const internal = policy.ingress.find((r: any) => r.ports[0].port === 5432);
+    expect(internal.from).toEqual([{ podSelector: {} }]);
+    expect(policy.egress.some((r: any) => r.ports?.[0]?.port === 5432 && r.to[0].podSelector)).toBe(
+      true,
+    );
+    // The public egress rule still excludes private ranges.
+    expect(policy.egress.find((r: any) => r.to[0].ipBlock).to[0].ipBlock.except).toContain(
+      "10.0.0.0/8",
+    );
+    const quota = resources.find((r) => r.body.kind === "ResourceQuota")!.body.spec.hard;
+    expect(quota.pods).toBe("2");
+    expect(quota.persistentvolumeclaims).toBe("2");
+  });
+  it("creates no database resources for projects that did not enable it", () => {
+    expect(all.some((r) => r.body.metadata?.name === "database")).toBe(false);
+    const env = get("Deployment").spec.template.spec.containers[0].env;
+    expect(env.some((e: any) => e.name === "DATABASE_URL")).toBe(false);
+  });
+});

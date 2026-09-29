@@ -75,8 +75,12 @@ docker build -q -t "localhost:${REG_PORT}/harness-control:e2e" .
 docker build -q -f runtime/Dockerfile -t "localhost:${REG_PORT}/harness-workspace:e2e" .
 docker push -q "localhost:${REG_PORT}/harness-control:e2e"
 docker push -q "localhost:${REG_PORT}/harness-workspace:e2e"
+docker pull -q postgres:17.6
+docker tag postgres:17.6 "localhost:${REG_PORT}/postgres:17.6"
+docker push -q "localhost:${REG_PORT}/postgres:17.6"
 control_digest=$(digest "localhost:${REG_PORT}/harness-control:e2e")
 workspace_digest=$(digest "localhost:${REG_PORT}/harness-workspace:e2e")
+database_digest=$(digest "localhost:${REG_PORT}/postgres:17.6")
 echo "control ${control_digest}  workspace ${workspace_digest}"
 echo "::endgroup::"
 
@@ -122,6 +126,7 @@ cp -r infra/k8s "$overlay"
 sed -i \
   -e "s#ghcr.io/YOUR-ORG/harness-workspace@sha256:REPLACE_WITH_VERIFIED_IMAGE_DIGEST#localhost:${REG_PORT}/harness-workspace@${workspace_digest}#" \
   -e "s#REPLACE_WITH_CSI_CLASS#standard#" \
+  -e "s#^  RUNTIME_CLASS: gvisor#  DATABASE_IMAGE: localhost:${REG_PORT}/postgres@${database_digest}\n  RUNTIME_CLASS: gvisor#" \
   "$overlay/config.yaml"
 sed -i \
   -e "s#ghcr.io/YOUR-ORG/harness-control#localhost:${REG_PORT}/harness-control#" \

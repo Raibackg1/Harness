@@ -35,8 +35,13 @@ beforeEach(async () => {
     [user, encoded, encrypt(secret, oldKey, `mfa:${user}`)],
   );
   await db.query(
-    "INSERT INTO projects(id,owner_id,name,template,runtime_key) VALUES($1,$2,'Rotation','node',$3)",
-    [project, user, encrypt("gateway-signing-key", oldKey, project)],
+    "INSERT INTO projects(id,owner_id,name,template,runtime_key,database,database_key) VALUES($1,$2,'Rotation','node',$3,true,$4)",
+    [
+      project,
+      user,
+      encrypt("gateway-signing-key", oldKey, project),
+      encrypt("app-database-password", oldKey, `db:${project}`),
+    ],
   );
   for (const name of ["FIRST_KEY", "SECOND_KEY"])
     await db.query("INSERT INTO secrets(project_id,name,ciphertext)VALUES($1,$2,$3)", [
@@ -80,7 +85,7 @@ describe("offline authenticated key rotation", () => {
     const result = await rotateEncryptionKey(db, { oldKey, newKey, operator: "validation" });
     expect(result).toEqual({
       dryRun: true,
-      counts: { secrets: 2, runtimeKeys: 1, mfaSeeds: 1, pendingMfaSeeds: 1 },
+      counts: { secrets: 2, runtimeKeys: 1, databaseKeys: 1, mfaSeeds: 1, pendingMfaSeeds: 1 },
       auditId: null,
     });
     expect(await snapshot()).toEqual(before);
@@ -100,6 +105,10 @@ describe("offline authenticated key rotation", () => {
       expect(() => decrypt(row.ciphertext, newKey, `${row.project_id}:OTHER_KEY`)).toThrow();
     }
     expect(decrypt(after.projects[0].runtime_key, newKey, project)).toBe("gateway-signing-key");
+    expect(decrypt(after.projects[0].database_key, newKey, `db:${project}`)).toBe(
+      "app-database-password",
+    );
+    expect(() => decrypt(after.projects[0].database_key, oldKey, `db:${project}`)).toThrow();
     for (const column of ["mfa_secret", "mfa_pending"])
       expect(decrypt(after.users[0][column], newKey, `mfa:${user}`)).toBe(secret);
     expect(after.users[0].password_hash).toBe(encoded);
@@ -207,6 +216,7 @@ describe("offline authenticated key rotation", () => {
     expect(result.counts).toEqual({
       secrets: 206,
       runtimeKeys: 103,
+      databaseKeys: 1,
       mfaSeeds: 103,
       pendingMfaSeeds: 1,
     });

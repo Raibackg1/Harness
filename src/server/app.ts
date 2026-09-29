@@ -45,7 +45,7 @@ const accessRank = { viewer: 0, view: 0, editor: 1, edit: 1, owner: 2, own: 2 } 
 // One source of truth for templates: a new entry in shared/templates.ts is accepted
 // by the API, seeded and downloadable without touching this file.
 const templateIds = Object.keys(templates) as [TemplateId, ...TemplateId[]];
-const publicProject = `id,name,description,template,desired,status,error,archived,provisioned,published,revision,created_at,updated_at,runtime_expires_at`;
+const publicProject = `id,name,description,template,desired,status,error,archived,provisioned,published,database,revision,created_at,updated_at,runtime_expires_at`;
 export async function createApp(config: Config, db: Database, logging = true) {
   await initializeEncryptionKey(db, config.ENCRYPTION_KEY);
   db = withEncryptionFence(db, config.ENCRYPTION_KEY);
@@ -414,6 +414,7 @@ export async function createApp(config: Config, db: Database, logging = true) {
   app.get("/api/projects/:id", { preHandler: auth }, async (req) => {
     const p = await project(req, db, false, "view");
     delete p.runtime_key;
+    delete p.database_key;
     delete p.owner_id;
     return p;
   });
@@ -549,6 +550,7 @@ export async function createApp(config: Config, db: Database, logging = true) {
       template: p.template,
       files,
       secretNames: await secretRowNames(p.id),
+      database: !!p.database,
     });
     const merged = { ...files, ...extra.files };
     const archive = zipSync(
@@ -739,6 +741,33 @@ export async function createApp(config: Config, db: Database, logging = true) {
       await audit(tx, req.user!.id, "secret.deleted", id(req), name);
     });
     return { ok: true };
+  });
+  app.put("/api/projects/:id/database", { preHandler: auth }, async (req) => {
+    const { enabled } = z.object({ enabled: z.boolean() }).parse(req.body);
+    if (enabled && (!config.DATABASE_IMAGE || !config.ENCRYPTION_KEY))
+      throw new HttpError(
+        503,
+        "La base de datos por proyecto requiere que la instalación configure DATABASE_IMAGE (fijada por digest) y ENCRYPTION_KEY.",
+      );
+    return db.transaction(async (tx) => {
+      const p = await project(req, tx, true);
+      // Generated once and never replaced: Postgres fixes the password when it first
+      // initializes the data volume, and that volume survives disabling the database.
+      const key =
+        p.database_key || (enabled ? encrypt(token(), config.ENCRYPTION_KEY!, `db:${p.id}`) : null);
+      await tx.query(
+        "UPDATE projects SET database=$1,database_key=$2,revision=revision+1,updated_at=now() WHERE id=$3",
+        [enabled, key, p.id],
+      );
+      await audit(
+        tx,
+        req.user!.id,
+        enabled ? "project.database_enabled" : "project.database_disabled",
+        p.id,
+        p.name,
+      );
+      return { database: enabled };
+    });
   });
   app.get("/api/projects/:id/members", { preHandler: auth }, async (req) => {
     const p = await project(req, db, false, "view");

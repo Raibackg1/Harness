@@ -117,8 +117,9 @@ step(
 const project = (
   await must("POST", "/api/projects", { name: "Kubernetes e2e", template: "html" }, [201])
 ).json;
+await must("PUT", `/api/projects/${project.id}/database`, { enabled: true });
 await must("POST", `/api/projects/${project.id}/runtime`, { action: "start" });
-step(`project ${project.id} created and start requested`);
+step(`project ${project.id} created with its own PostgreSQL, start requested`);
 const ns = `hc-${project.id}`;
 await until(
   "the worker to report the workspace running",
@@ -143,9 +144,9 @@ await until(
 step("worker reconciled the project to running");
 
 // 4. The Pod really runs in the sandbox the admission policy demands.
-const pod = JSON.parse(await kubectl("-n", ns, "get", "pods", "-o", "json")).items.find(
-  (p) => p.status?.phase === "Running",
-);
+const pod = JSON.parse(
+  await kubectl("-n", ns, "get", "pods", "-l", `harness.cloud/project=${project.id}`, "-o", "json"),
+).items.find((p) => p.status?.phase === "Running");
 if (pod?.spec?.runtimeClassName !== "gvisor")
   throw new Error(`workspace runtimeClassName is ${pod?.spec?.runtimeClassName}`);
 const dmesg = await kubectl("-n", ns, "exec", pod.metadata.name, "-c", "workspace", "--", "dmesg");
@@ -154,6 +155,72 @@ step("workspace Pod runs under gVisor (dmesg reports the gVisor kernel)");
 if (pod.spec.automountServiceAccountToken !== false)
   throw new Error("workspace Pod mounts a service account token");
 step("workspace Pod has no cluster credentials");
+
+// 4b. The project's PostgreSQL: sandboxed, reachable from the workspace, credentials valid.
+const dbPod = await until(
+  "the project database to be ready",
+  async () =>
+    JSON.parse(
+      await kubectl(
+        "-n",
+        ns,
+        "get",
+        "pods",
+        "-l",
+        `harness.cloud/database=${project.id}`,
+        "-o",
+        "json",
+      ),
+    ).items.find((p) =>
+      p.status?.conditions?.some((c) => c.type === "Ready" && c.status === "True"),
+    ),
+  240000,
+  4000,
+);
+if (dbPod.spec.runtimeClassName !== "gvisor" || dbPod.spec.automountServiceAccountToken !== false)
+  throw new Error("the project database is not sandboxed like the workspace");
+step("project PostgreSQL is ready under gVisor without cluster credentials");
+const url = (
+  await kubectl(
+    "-n",
+    ns,
+    "exec",
+    pod.metadata.name,
+    "-c",
+    "workspace",
+    "--",
+    "printenv",
+    "DATABASE_URL",
+  )
+).trim();
+if (!/^postgresql:\/\/app:[^@]+@database:5432\/app$/.test(url))
+  throw new Error("the workspace did not receive a DATABASE_URL for its database");
+const answer = await kubectl(
+  "-n",
+  ns,
+  "exec",
+  dbPod.metadata.name,
+  "--",
+  "psql",
+  url.replace("@database:", "@127.0.0.1:"),
+  "-tAc",
+  "select 40 + 2",
+);
+if (answer.trim() !== "42")
+  throw new Error(`the credential in DATABASE_URL did not work: ${answer}`);
+await kubectl(
+  "-n",
+  ns,
+  "exec",
+  pod.metadata.name,
+  "-c",
+  "workspace",
+  "--",
+  "bash",
+  "-c",
+  "timeout 10 bash -c 'exec 3<>/dev/tcp/database/5432'",
+);
+step("workspace receives DATABASE_URL, reaches the database and its credential authenticates");
 
 // 5. The admission boundary rejects a Pod without gVisor in a managed namespace.
 const rogue = {
@@ -311,4 +378,23 @@ await until(
   5000,
 );
 step("stop through the API removed the workspace Pod");
+await until(
+  "the database Pod to stop with the project",
+  async () =>
+    JSON.parse(
+      await kubectl(
+        "-n",
+        ns,
+        "get",
+        "pods",
+        "-l",
+        `harness.cloud/database=${project.id}`,
+        "-o",
+        "json",
+      ),
+    ).items.length === 0,
+  180000,
+  5000,
+);
+step("the project database stops with the project");
 console.log("kubernetes e2e passed");

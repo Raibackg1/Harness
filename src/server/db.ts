@@ -98,6 +98,16 @@ export async function migrate(db: Database) {
       await tx.query("CREATE INDEX project_members_user ON project_members(user_id)");
       await tx.query("UPDATE schema_migrations SET version=5 WHERE id=1");
     }
+    if (row.version < 6) {
+      // Optional PostgreSQL per project. database_key is the app database password,
+      // encrypted like runtime_key (context "db:<id>") and rotated with the master key.
+      // It is independent of runtime_key: Postgres fixes the password when it first
+      // initializes its data, so it must survive runtime_key rotation.
+      await tx.query(
+        "ALTER TABLE projects ADD COLUMN database boolean NOT NULL DEFAULT false, ADD COLUMN database_key text",
+      );
+      await tx.query("UPDATE schema_migrations SET version=6 WHERE id=1");
+    }
   });
 }
 const schema = `

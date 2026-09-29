@@ -544,6 +544,7 @@ export function ProjectView({
             notify={notify}
             onDelete={() => setDeleting(true)}
           />
+          <ProjectDatabase project={p} refresh={refresh} notify={notify} />
           <ProjectMembers project={p} notify={notify} />
         </>
       ) : null}
@@ -1175,6 +1176,62 @@ function SecretsView({
         <p>Los cambios se aplican al iniciar o reiniciar el entorno.</p>
       </aside>
     </div>
+  );
+}
+function ProjectDatabase({
+  project,
+  refresh,
+  notify,
+}: {
+  project: Project;
+  refresh: () => Promise<void>;
+  notify: Notify;
+}) {
+  const [busy, setBusy] = useState(false);
+  async function toggle() {
+    const enabling = !project.database;
+    if (
+      !enabling &&
+      !confirm(
+        "¿Desactivar la base de datos? El servidor se detiene y DATABASE_URL deja de existir en el entorno. Los datos se conservan hasta que elimines el proyecto.",
+      )
+    )
+      return;
+    setBusy(true);
+    try {
+      await api(`/projects/${project.id}/database`, send("PUT", { enabled: enabling }));
+      await refresh();
+      notify(enabling ? "Base de datos activada." : "Base de datos desactivada.");
+    } catch (e) {
+      notify((e as Error).message, true);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <section className="panel" aria-label="Base de datos PostgreSQL">
+      <div className="panel-head">
+        <div>
+          <h2>Base de datos PostgreSQL</h2>
+          <p>
+            Un PostgreSQL 17 propio del proyecto, en el mismo sandbox aislado que el entorno y con
+            su volumen de 2 GiB. Tu código lo encuentra en la variable <code>DATABASE_URL</code>.
+            Solo el entorno de este proyecto puede conectarse. La exportación incluye una base vacía
+            en <code>docker-compose.yml</code>, no los datos.
+          </p>
+        </div>
+      </div>
+      <Notice>
+        {project.database
+          ? "Activa. Si el entorno está en ejecución, el worker lo recrea con DATABASE_URL: guarda tu trabajo."
+          : "Desactivada. Al activarla con el entorno en ejecución, este se recrea para recibir DATABASE_URL."}
+      </Notice>
+      <div className="panel-actions">
+        <Button variant="secondary" busy={busy} onClick={() => void toggle()}>
+          {project.database ? "Desactivar base de datos" : "Activar base de datos"}
+        </Button>
+      </div>
+    </section>
   );
 }
 const roleLabel: Record<Project["role"], string> = {

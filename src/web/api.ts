@@ -27,6 +27,8 @@ export interface Project {
   template: "react" | "node" | "python" | "fastapi" | "html";
   /** The caller's access: owners manage everything, editors change code, viewers read. */
   role: "owner" | "editor" | "viewer";
+  /** A PostgreSQL of its own runs next to the workspace; DATABASE_URL points at it. */
+  database: boolean;
   status: string;
   desired: string;
   archived: boolean;

@@ -45,13 +45,20 @@ export function withEncryptionFence(db: Database, key?: string): Database {
 export type EncryptionCounts = {
   secrets: number;
   runtimeKeys: number;
+  databaseKeys: number;
   mfaSeeds: number;
   pendingMfaSeeds: number;
 };
 // Bounded keyset batches: plaintext is never returned, accumulated or logged.
 // Caller holds the maintenance/table locks. A single transaction covers ALL batches.
 async function visitEncryptedValues(tx: Sql, oldKey?: string, newKey?: string) {
-  const counts: EncryptionCounts = { secrets: 0, runtimeKeys: 0, mfaSeeds: 0, pendingMfaSeeds: 0 };
+  const counts: EncryptionCounts = {
+    secrets: 0,
+    runtimeKeys: 0,
+    databaseKeys: 0,
+    mfaSeeds: 0,
+    pendingMfaSeeds: 0,
+  };
   const transform = (value: string, context: string) => {
     if (!oldKey) throw mismatch();
     try {
@@ -87,15 +94,27 @@ async function visitEncryptedValues(tx: Sql, oldKey?: string, newKey?: string) {
   }
   cursor = null;
   while (true) {
-    const { rows }: { rows: { id: string; runtime_key: string }[] } = await tx.query(
-      "SELECT id,runtime_key FROM projects WHERE runtime_key IS NOT NULL AND ($1::uuid IS NULL OR id>$1::uuid) ORDER BY id LIMIT 100",
-      [cursor],
-    );
+    const {
+      rows,
+    }: { rows: { id: string; runtime_key: string | null; database_key: string | null }[] } =
+      await tx.query(
+        "SELECT id,runtime_key,database_key FROM projects WHERE (runtime_key IS NOT NULL OR database_key IS NOT NULL) AND ($1::uuid IS NULL OR id>$1::uuid) ORDER BY id LIMIT 100",
+        [cursor],
+      );
     if (!rows.length) break;
     for (const row of rows) {
-      const value = transform(row.runtime_key, row.id);
-      if (newKey) await tx.query("UPDATE projects SET runtime_key=$1 WHERE id=$2", [value, row.id]);
-      counts.runtimeKeys++;
+      if (row.runtime_key !== null) {
+        const value = transform(row.runtime_key, row.id);
+        if (newKey)
+          await tx.query("UPDATE projects SET runtime_key=$1 WHERE id=$2", [value, row.id]);
+        counts.runtimeKeys++;
+      }
+      if (row.database_key !== null) {
+        const value = transform(row.database_key, `db:${row.id}`);
+        if (newKey)
+          await tx.query("UPDATE projects SET database_key=$1 WHERE id=$2", [value, row.id]);
+        counts.databaseKeys++;
+      }
       cursor = row.id;
     }
   }

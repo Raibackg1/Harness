@@ -58,6 +58,7 @@ export async function reconcileOne(db: Database, config: Config, k8s: Kubernetes
         Object.fromEntries(files.rows.map((f) => [f.path, f.content])),
         secrets,
         decrypt(p.runtime_key, config.ENCRYPTION_KEY!, p.id),
+        p.database_key ? decrypt(p.database_key, config.ENCRYPTION_KEY!, `db:${p.id}`) : undefined,
       );
     }
     await db.query(

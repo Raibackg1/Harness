@@ -11,6 +11,8 @@ export interface Project {
   published: boolean;
   provisioned: boolean;
   runtime_key: string;
+  database?: boolean;
+  database_key?: string | null;
 }
 export const namespace = (id: string) => `hc-${id}`;
 export const hosts = (id: string, domain: string) => ({
@@ -158,9 +160,21 @@ export class Kubernetes {
     files: Record<string, string>,
     secrets: Record<string, string>,
     key: string,
+    databasePassword?: string,
   ) {
-    for (const r of workspaceResources(this.config, project, files, secrets, key))
+    for (const r of workspaceResources(this.config, project, files, secrets, key, databasePassword))
       await this.apply(r.path, r.body);
+    if (!project.database) {
+      // Disabling the database removes the server and its credentials but KEEPS the data
+      // volume: re-enabling reattaches it. The volume only goes with the project.
+      const n = namespace(project.id);
+      for (const path of [
+        `/apis/apps/v1/namespaces/${n}/deployments/database`,
+        `/api/v1/namespaces/${n}/services/database`,
+        `/api/v1/namespaces/${n}/secrets/database`,
+      ])
+        if (await this.request(path)) await this.request(path, "DELETE");
+    }
     return this.observe(project.id);
   }
   async observe(id: string) {
@@ -186,14 +200,16 @@ export class Kubernetes {
   }
   async stop(id: string) {
     const n = namespace(id);
-    const dep = await this.request(`/apis/apps/v1/namespaces/${n}/deployments/workspace`);
-    if (dep)
-      await this.request(
-        `/apis/apps/v1/namespaces/${n}/deployments/workspace/scale`,
-        "PATCH",
-        { spec: { replicas: 0 } },
-        "application/merge-patch+json",
-      );
+    for (const name of ["workspace", "database"]) {
+      const dep = await this.request(`/apis/apps/v1/namespaces/${n}/deployments/${name}`);
+      if (dep)
+        await this.request(
+          `/apis/apps/v1/namespaces/${n}/deployments/${name}/scale`,
+          "PATCH",
+          { spec: { replicas: 0 } },
+          "application/merge-patch+json",
+        );
+    }
     return this.observe(id);
   }
   async remove(id: string) {
@@ -229,9 +245,13 @@ export function workspaceResources(
   files: Record<string, string>,
   secrets: Record<string, string>,
   key: string,
+  databasePassword?: string,
 ) {
   const n = namespace(p.id),
     h = hosts(p.id, c.WORKSPACE_DOMAIN!);
+  const database = !!p.database;
+  if (database && (!c.DATABASE_IMAGE || !databasePassword))
+    throw new Error("La base de datos del proyecto requiere DATABASE_IMAGE y su credencial.");
   const labels = { "app.kubernetes.io/managed-by": "harness-cloud", "harness.cloud/project": p.id };
   const metadata = (name: string) => ({ name, namespace: n, labels });
   const core = `/api/v1/namespaces/${n}`;
@@ -258,13 +278,13 @@ export function workspaceResources(
       hard: {
         "requests.cpu": "2",
         "requests.memory": "4Gi",
-        "limits.cpu": "2",
-        "limits.memory": "4Gi",
-        pods: "1",
-        persistentvolumeclaims: "1",
-        "requests.storage": "5Gi",
-        "count/services": "1",
-        "count/secrets": "4",
+        "limits.cpu": database ? "2500m" : "2",
+        "limits.memory": database ? "4608Mi" : "4Gi",
+        pods: database ? "2" : "1",
+        persistentvolumeclaims: database ? "2" : "1",
+        "requests.storage": database ? "7Gi" : "5Gi",
+        "count/services": database ? "2" : "1",
+        "count/secrets": database ? "5" : "4",
         // Kubernetes publishes kube-root-ca.crt into every namespace; with "1" the seed
         // ConfigMap exceeded the quota (HTTP 403) and no workspace could ever start.
         "count/configmaps": "2",
@@ -346,6 +366,15 @@ export function workspaceResources(
       ],
     },
   });
+  if (database) {
+    // The only lateral traffic allowed: workspace <-> database inside this namespace.
+    const isolation = resources[resources.length - 1].body.spec;
+    isolation.ingress.push({
+      from: [{ podSelector: {} }],
+      ports: [{ port: 5432, protocol: "TCP" }],
+    });
+    isolation.egress.push({ to: [{ podSelector: {} }], ports: [{ port: 5432, protocol: "TCP" }] });
+  }
   add(`${core}/persistentvolumeclaims/home`, {
     apiVersion: "v1",
     kind: "PersistentVolumeClaim",
@@ -378,6 +407,111 @@ export function workspaceResources(
       Object.entries(secrets).map(([k, v]) => [k, Buffer.from(v).toString("base64")]),
     ),
   });
+  if (database) {
+    // Its own label: "harness.cloud/project" selects the workspace Service endpoints and
+    // is what observe() counts, so the database must never carry it.
+    const dbLabels = {
+      "app.kubernetes.io/managed-by": "harness-cloud",
+      "harness.cloud/database": p.id,
+    };
+    const dbMeta = (name: string) => ({ name, namespace: n, labels: dbLabels });
+    const url = `postgresql://app:${encodeURIComponent(databasePassword!)}@database:5432/app`;
+    add(`${core}/secrets/database`, {
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: dbMeta("database"),
+      type: "Opaque",
+      data: {
+        password: Buffer.from(databasePassword!).toString("base64"),
+        url: Buffer.from(url).toString("base64"),
+      },
+    });
+    add(`${core}/persistentvolumeclaims/database`, {
+      apiVersion: "v1",
+      kind: "PersistentVolumeClaim",
+      metadata: dbMeta("database"),
+      spec: {
+        accessModes: ["ReadWriteOnce"],
+        ...(c.STORAGE_CLASS ? { storageClassName: c.STORAGE_CLASS } : {}),
+        resources: { requests: { storage: "2Gi" } },
+      },
+    });
+    add(`/apis/apps/v1/namespaces/${n}/deployments/database`, {
+      apiVersion: "apps/v1",
+      kind: "Deployment",
+      metadata: dbMeta("database"),
+      spec: {
+        replicas: p.desired === "running" ? 1 : 0,
+        strategy: { type: "Recreate" },
+        selector: { matchLabels: { "harness.cloud/database": p.id } },
+        template: {
+          metadata: { labels: dbLabels },
+          spec: {
+            runtimeClassName: c.RUNTIME_CLASS,
+            automountServiceAccountToken: false,
+            enableServiceLinks: false,
+            terminationGracePeriodSeconds: 30,
+            securityContext: {
+              runAsNonRoot: true,
+              runAsUser: 999,
+              runAsGroup: 999,
+              fsGroup: 999,
+              seccompProfile: { type: "RuntimeDefault" },
+            },
+            containers: [
+              {
+                name: "postgres",
+                image: c.DATABASE_IMAGE,
+                imagePullPolicy: "IfNotPresent",
+                ports: [{ containerPort: 5432 }],
+                env: [
+                  { name: "POSTGRES_USER", value: "app" },
+                  { name: "POSTGRES_DB", value: "app" },
+                  {
+                    name: "POSTGRES_PASSWORD",
+                    valueFrom: { secretKeyRef: { name: "database", key: "password" } },
+                  },
+                  { name: "PGDATA", value: "/var/lib/postgresql/data/pgdata" },
+                ],
+                securityContext: {
+                  allowPrivilegeEscalation: false,
+                  readOnlyRootFilesystem: true,
+                  capabilities: { drop: ["ALL"] },
+                },
+                resources: {
+                  requests: { cpu: "100m", memory: "256Mi" },
+                  limits: { cpu: "500m", memory: "512Mi" },
+                },
+                readinessProbe: {
+                  exec: { command: ["pg_isready", "-h", "127.0.0.1", "-U", "app", "-d", "app"] },
+                  periodSeconds: 5,
+                },
+                volumeMounts: [
+                  { name: "data", mountPath: "/var/lib/postgresql/data" },
+                  { name: "run", mountPath: "/var/run/postgresql" },
+                  { name: "tmp", mountPath: "/tmp" },
+                ],
+              },
+            ],
+            volumes: [
+              { name: "data", persistentVolumeClaim: { claimName: "database" } },
+              { name: "run", emptyDir: { sizeLimit: "16Mi" } },
+              { name: "tmp", emptyDir: { sizeLimit: "64Mi" } },
+            ],
+          },
+        },
+      },
+    });
+    add(`${core}/services/database`, {
+      apiVersion: "v1",
+      kind: "Service",
+      metadata: dbMeta("database"),
+      spec: {
+        selector: { "harness.cloud/database": p.id },
+        ports: [{ name: "postgres", port: 5432, targetPort: 5432 }],
+      },
+    });
+  }
   add(`/apis/apps/v1/namespaces/${n}/deployments/workspace`, {
     apiVersion: "apps/v1",
     kind: "Deployment",
@@ -414,6 +548,14 @@ export function workspaceResources(
                 { name: "AI_HOST", value: h.agent },
                 { name: "APP_HOST", value: h.app },
                 { name: "PUBLISHED", value: String(p.published) },
+                ...(database
+                  ? [
+                      {
+                        name: "DATABASE_URL",
+                        valueFrom: { secretKeyRef: { name: "database", key: "url" } },
+                      },
+                    ]
+                  : []),
               ],
               securityContext: {
                 allowPrivilegeEscalation: false,
