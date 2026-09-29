@@ -18,6 +18,35 @@ export const hosts = (id: string, domain: string) => ({
   agent: `ai-${id}.${domain}`,
   app: `app-${id}.${domain}`,
 });
+// The worker's ClusterRole grants cluster-scoped mutations; these three policies and
+// their Deny bindings are the only thing that keeps it inside hc-<project> namespaces.
+// Neither the API nor the dashboard can assume the operator installed them, so both
+// verify them and the worker refuses to reconcile otherwise.
+export const SANDBOX_POLICIES = [
+  "harness-worker-namespace-boundary",
+  "harness-worker-resource-boundary",
+  "harness-workspace-sandbox",
+] as const;
+export type BoundaryCheck = { name: string; ok: boolean; problems: string[] };
+export type SandboxBoundaries = { ok: boolean; checks: BoundaryCheck[] };
+const eventMessages: Record<string, string> = {
+  FailedScheduling:
+    "El clúster todavía no pudo programar el entorno: falta capacidad o un nodo elegible.",
+  FailedMount: "El volumen del entorno no se pudo montar.",
+  FailedAttachVolume: "El volumen del entorno no se pudo conectar al nodo.",
+  Pulling: "Se está descargando la imagen del entorno.",
+  ErrImagePull: "La imagen del entorno no se pudo descargar; verifica el digest y el registry.",
+  ImagePullBackOff: "La imagen del entorno no se pudo descargar; verifica el digest y el registry.",
+  BackOff: "El entorno reinició repetidamente y quedó en espera.",
+  Created: "El entorno se creó.",
+  Started: "El entorno inició.",
+  Killing: "Se está deteniendo el entorno.",
+  Preempted: "El clúster desalojó el entorno; vuelve a iniciarlo.",
+  Evicted: "El clúster desalojó el entorno por presión de recursos.",
+};
+export const publicEventMessage = (reason?: string) =>
+  eventMessages[reason || ""] ||
+  "Evento del entorno. El detalle del clúster queda disponible para la persona administradora.";
 export class Kubernetes {
   constructor(public config: Config) {}
   async request(
@@ -88,6 +117,35 @@ export class Kubernetes {
     if (!runtime) throw new Error(`RuntimeClass ${this.config.RUNTIME_CLASS} no disponible`);
     return this.request("/version");
   }
+  private async readAdmission(kind: string, name: string) {
+    try {
+      return { value: await this.request(`/apis/admissionregistration.k8s.io/v1/${kind}/${name}`) };
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : "admission read failed" };
+    }
+  }
+  async sandboxBoundaries(): Promise<SandboxBoundaries> {
+    const checks: BoundaryCheck[] = [];
+    for (const name of SANDBOX_POLICIES) {
+      const problems: string[] = [];
+      const policy = await this.readAdmission("validatingadmissionpolicies", name);
+      if (policy.error) problems.push(`policy unreadable: ${policy.error}`);
+      else if (!policy.value) problems.push("policy not installed");
+      else if (policy.value.spec?.failurePolicy !== "Fail")
+        problems.push(`failurePolicy must be Fail, found ${policy.value.spec?.failurePolicy}`);
+      const binding = await this.readAdmission("validatingadmissionpolicybindings", name);
+      if (binding.error) problems.push(`binding unreadable: ${binding.error}`);
+      else if (!binding.value) problems.push("binding not installed");
+      else {
+        if (binding.value.spec?.policyName !== name)
+          problems.push("binding refers to a different policy");
+        if (!(binding.value.spec?.validationActions || []).includes("Deny"))
+          problems.push("binding does not Deny");
+      }
+      checks.push({ name, ok: problems.length === 0, problems });
+    }
+    return { ok: checks.every((c) => c.ok), checks };
+  }
   async ensure(
     project: Project,
     files: Record<string, string>,
@@ -146,13 +204,15 @@ export class Kubernetes {
     return false;
   }
   async logs(id: string) {
-    // Events rather than process logs: user secrets and arbitrary code output must not leak to control-plane logs.
+    // Events rather than process logs: user secrets and arbitrary code output must not leak
+    // to control-plane logs. The raw event message is kept away from members too, because it
+    // names storage classes, node hosts and CNI internals that belong to the operator.
     const result = await this.request(`/api/v1/namespaces/${namespace(id)}/events`);
     return (result?.items || []).slice(-40).map((e: any) => ({
       time: e.lastTimestamp || e.metadata.creationTimestamp,
       type: e.type,
       reason: e.reason,
-      message: e.message,
+      message: publicEventMessage(e.reason),
     }));
   }
 }

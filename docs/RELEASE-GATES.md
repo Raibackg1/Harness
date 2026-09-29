@@ -6,29 +6,31 @@ Este archivo registra el alcance real. No sustituye una auditoría, contrato, ce
 
 ## Matriz de evidencia
 
-| Área                                 | Estado                               | Evidencia / falta                                                                                                 |
-| ------------------------------------ | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| Interfaz responsive y flujos locales | Verificado                           | Playwright: alta, proyecto, archivos/ZIP, invitaciones, TOTP/recuperación/login, revocación, archivo/borrado      |
-| Persistencia                         | Verificado con PGlite                | Reapertura de PostgreSQL embebido y lectura del dato anterior                                                     |
-| Autenticación y autorización         | Pruebas automatizadas                | TOTP/replay/recuperación, sesiones, suspensión, invitaciones, IDOR, reautenticación                               |
-| Cifrado de secretos                  | Pruebas automatizadas                | AAD, claves/contextos incorrectos, no exposición por API                                                          |
-| Compilación TypeScript + Vite        | Verificado                           | `npm run check`                                                                                                   |
-| Accesibilidad                        | Verificación parcial                 | axe sin infracciones graves/críticas WCAG A/AA en inicio; no certificación de todas las pantallas                 |
-| Compatibilidad CLI Harness           | Verificada parcialmente              | `web --help`, composición de `privacy.yml` con `--dump-config`                                                    |
-| Reconciliación                       | Pruebas con doble                    | Intenciones, leases, fallos, borrado diferido y revisiones concurrentes; no equivalen a K8s real                  |
-| PostgreSQL externo                   | Verificado localmente por TCP        | 60 pruebas sobre proceso PostgreSQL 17.6 separado; CI/staging gestionado todavía pendientes                       |
-| Gateway HTTP/WebSocket               | Verificado localmente                | 12 tests, ocho con servidores HTTP/WS reales; no prueba Ingress/TLS de clúster                                    |
-| Capacidad/vencimiento                | Pruebas transaccionales              | Cuotas concurrentes, reservas retenidas, plazos no renovables, worker; apagado físico en K8s pendiente            |
-| Migraciones hasta v3                 | Prueba local                         | Conserva cuentas, hashes de sesión, proyectos y agrega estado de cifrado; backup/upgrade de producción pendientes |
-| Imágenes OCI                         | Dockerfiles y plantillas CI escritas | No hay Docker en este entorno; construir, escanear, firmar y arrancar                                             |
-| Kubernetes / políticas CEL           | Implementado, no validado en clúster | Dry-run servidor, bindings Deny y pruebas adversarias pendientes                                                  |
-| gVisor/Kata + herramientas Harness   | Pendiente                            | Pruebas de shell, permisos, Node/Python/code-server con el runtime real                                           |
-| Proveedor/modelo IA                  | No configurado                       | API key, costes, tratamiento de datos y pruebas funcionales pendientes                                            |
-| DNS/TLS/Ingress/WS                   | Pendiente                            | Dominios y clúster no suministrados                                                                               |
-| Backups, restauración, RPO/RTO       | Procedimiento documentado            | Backup y restauración real pendientes                                                                             |
-| Monitoreo y guardia operativa        | Pendiente                            | No hay stack ni alertas desplegadas                                                                               |
-| Carga, escalado y antiabuso          | Pendiente                            | No se han medido límites ni aislado el impacto de usuarios hostiles                                               |
-| Auditoría independiente              | Pendiente                            | Ninguna auditoría/pentest externa realizada                                                                       |
+| Área                                 | Estado                               | Evidencia / falta                                                                                                                                                  |
+| ------------------------------------ | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Interfaz responsive y flujos locales | Verificado                           | Playwright: alta, proyecto, archivos/ZIP, invitaciones, TOTP/recuperación/login, revocación, archivo/borrado                                                       |
+| Persistencia                         | Verificado con PGlite                | Reapertura de PostgreSQL embebido y lectura del dato anterior                                                                                                      |
+| Autenticación y autorización         | Pruebas automatizadas                | TOTP/replay/recuperación, sesiones, suspensión, invitaciones, IDOR, reautenticación                                                                                |
+| Cifrado de secretos                  | Pruebas automatizadas                | AAD, claves/contextos incorrectos, no exposición por API                                                                                                           |
+| Compilación TypeScript + Vite        | Verificado                           | `npm run check`                                                                                                                                                    |
+| Accesibilidad                        | Verificación parcial                 | axe sin infracciones graves/críticas WCAG A/AA en inicio; no certificación de todas las pantallas                                                                  |
+| Compatibilidad CLI Harness           | Verificada parcialmente              | `web --help`, composición de `privacy.yml` con `--dump-config`                                                                                                     |
+| Reconciliación                       | Pruebas con doble                    | Intenciones, leases, fallos, borrado diferido y revisiones concurrentes; no equivalen a K8s real                                                                   |
+| PostgreSQL externo                   | Verificado localmente por TCP        | 60 pruebas sobre proceso PostgreSQL 17.6 separado; CI/staging gestionado todavía pendientes                                                                        |
+| Gateway HTTP/WebSocket               | Verificado localmente                | 12 tests, ocho con servidores HTTP/WS reales; no prueba Ingress/TLS de clúster                                                                                     |
+| Capacidad/vencimiento                | Pruebas transaccionales              | Cuotas concurrentes, reservas retenidas, plazos no renovables, worker; apagado físico en K8s pendiente                                                             |
+| Migraciones hasta v4                 | Prueba local                         | Conserva cuentas, hashes de sesión, proyectos y estado de cifrado; `project_releases` con cascada por proyecto; backup/upgrade de producción pendientes            |
+| Portabilidad (bundle e importación)  | Pruebas automatizadas                | 12 tests de recetas, límites y rutas; el ZIP se arma en este entorno, pero nadie lo construyó ni arrancó con Docker real                                           |
+| Frontera de admisión del workspace   | Configuración verificada             | El worker comprueba políticas y bindings declarados y `/api/infrastructure/check` los informa; **no se probó un `Deny` real en un clúster**                        |
+| Imágenes OCI                         | Dockerfiles y plantillas CI escritas | No hay Docker en este entorno; construir, escanear, firmar y arrancar                                                                                              |
+| Kubernetes / políticas CEL           | Implementado, no validado en clúster | El worker verifica políticas/bindings al arrancar y `/api/infrastructure/check` los informa; faltan dry-run servidor, bindings Deny probados y pruebas adversarias |
+| gVisor/Kata + herramientas Harness   | Pendiente                            | Pruebas de shell, permisos, Node/Python/code-server con el runtime real                                                                                            |
+| Proveedor/modelo IA                  | No configurado                       | API key, costes, tratamiento de datos y pruebas funcionales pendientes                                                                                             |
+| DNS/TLS/Ingress/WS                   | Pendiente                            | Dominios y clúster no suministrados                                                                                                                                |
+| Backups, restauración, RPO/RTO       | Procedimiento documentado            | Backup y restauración real pendientes                                                                                                                              |
+| Monitoreo y guardia operativa        | Pendiente                            | No hay stack ni alertas desplegadas                                                                                                                                |
+| Carga, escalado y antiabuso          | Pendiente                            | No se han medido límites ni aislado el impacto de usuarios hostiles                                                                                                |
+| Auditoría independiente              | Pendiente                            | Ninguna auditoría/pentest externa realizada                                                                                                                        |
 
 ## Rotación de clave maestra
 

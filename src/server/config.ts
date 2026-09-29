@@ -38,15 +38,29 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     if (!c.APP_ORIGIN!.startsWith("https://")) throw new Error("APP_ORIGIN must use HTTPS");
   }
   if (c.KUBERNETES_ENABLED === "true") {
+    // The workspace gateway refuses to boot without APP_ORIGIN, and the generated
+    // Deployment drops an undefined env value entirely (JSON.stringify), so a missing
+    // origin surfaces as a crash-looping workspace or an opaque admission error.
+    if (!c.APP_ORIGIN)
+      throw new Error(
+        "Kubernetes requires APP_ORIGIN: the gateway validates the launch origin of every ticket",
+      );
+    if (!c.APP_ORIGIN.startsWith("https://"))
+      throw new Error("APP_ORIGIN must use HTTPS with Kubernetes workspaces");
     if (!c.WORKSPACE_DOMAIN || !c.WORKSPACE_IMAGE || !c.ENCRYPTION_KEY)
       throw new Error("Kubernetes requires WORKSPACE_DOMAIN, WORKSPACE_IMAGE and ENCRYPTION_KEY");
     if (!/^[-a-zA-Z0-9_./:]+@sha256:[a-f0-9]{64}$/.test(c.WORKSPACE_IMAGE))
       throw new Error("WORKSPACE_IMAGE must be pinned by digest");
     if (c.RUNTIME_CLASS !== "gvisor" && c.RUNTIME_CLASS !== "kata")
       throw new Error("Only gvisor or kata runtimes are allowed");
-    const controlHost = c.APP_ORIGIN && new URL(c.APP_ORIGIN).hostname;
+    let controlHost = "";
+    try {
+      controlHost = new URL(c.APP_ORIGIN!).hostname;
+    } catch {
+      throw new Error("APP_ORIGIN must be an absolute URL with a host");
+    }
+    if (!controlHost) throw new Error("APP_ORIGIN must include a host");
     if (
-      !controlHost ||
       !getDomain(c.WORKSPACE_DOMAIN, { allowPrivateDomains: true }) ||
       getDomain(controlHost, { allowPrivateDomains: true }) ===
         getDomain(c.WORKSPACE_DOMAIN, { allowPrivateDomains: true }) ||

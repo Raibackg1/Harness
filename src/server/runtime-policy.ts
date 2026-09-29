@@ -2,6 +2,7 @@ import type { Database } from "./db.js";
 import type { Config } from "./config.js";
 import { HttpError, audit } from "./contracts.js";
 import { encrypt, token } from "./security.js";
+import { snapshotRelease } from "./releases.js";
 // A stopping or uncertain workspace still occupies capacity until observed stopped.
 export const occupied =
   "(desired='running' OR status IN ('running','starting','stopping','deleting') OR (provisioned AND status='error'))";
@@ -71,6 +72,10 @@ export async function changeRuntime(
       ],
     );
     await audit(tx, userId, `runtime.${action}`, p.id);
+    // Publishing is the moment worth keeping: the live workspace is seeded from exactly these
+    // files, so the snapshot is a restore point rather than an invented deploy history.
+    if (action === "publish")
+      await snapshotRelease(tx, p.id, "Publicación de la revisión " + (p.revision + 1));
   });
 }
 export async function expireRuntimes(db: Database) {

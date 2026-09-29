@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { createDatabase, migrate, type Database } from "../src/server/db";
 import { loadConfig } from "../src/server/config";
 import { changeRuntime, expireRuntimes, capacityReport } from "../src/server/runtime-policy";
+import { listReleases } from "../src/server/releases";
 import { startWorker } from "../src/server/worker";
 import type { Kubernetes } from "../src/server/kubernetes";
 let db: Database;
@@ -129,5 +130,31 @@ describe("durable capacity and bounded execution sessions", () => {
       [randomUUID()],
     );
     expect((await capacityReport(db, c)).workerHealthy).toBe(false);
+  });
+});
+
+describe("what a publication records", () => {
+  it("snapshots the seeded code once per publication and bounds the history", async () => {
+    const id = await project();
+    await db.query(
+      "INSERT INTO project_files(project_id,path,content) VALUES ($1,'index.js','1')",
+      [id],
+    );
+    await db.query(
+      "INSERT INTO secrets(project_id,name,ciphertext) VALUES ($1,'KEY','iv.tag.data')",
+      [id],
+    );
+    await changeRuntime(db, c, u1, id, "start");
+    await changeRuntime(db, c, u1, id, "publish");
+    expect(await listReleases(db, id)).toMatchObject([
+      { file_count: 1, secret_names: ["KEY"], note: "Publicación de la revisión 2" },
+    ]);
+    for (let i = 0; i < 30; i++) await changeRuntime(db, c, u1, id, "publish");
+    const kept = await listReleases(db, id);
+    expect(kept).toHaveLength(20);
+    expect(kept[0].note).toBe("Publicación de la revisión 32");
+    // A stop is not a publication, so it never invents a restore point.
+    await changeRuntime(db, c, u1, id, "stop");
+    expect(await listReleases(db, id)).toHaveLength(20);
   });
 });

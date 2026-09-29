@@ -60,6 +60,25 @@ export const templates = {
       "README.md": "# Mi proyecto Python\n\nEjecuta `python3 main.py` en la terminal del IDE.\n",
     },
   },
+  fastapi: {
+    name: "API con FastAPI",
+    language: "Python",
+    color: "#1f9e8c",
+    icon: "python",
+    description: "Una API tipada, con documentaci\u00f3n y pruebas.",
+    command: "uvicorn main:app --host 0.0.0.0 --port 3000 --reload",
+    files: {
+      "main.py":
+        'from fastapi import FastAPI\n\napp = FastAPI(title="API Harness", version="0.1.0")\n\n@app.get("/")\ndef read_root():\n    return {"message": "Hola desde FastAPI", "docs": "/docs"}\n\n@app.get("/healthz")\ndef health():\n    return {"ok": True}\n',
+      "test_main.py":
+        'from fastapi.testclient import TestClient\nfrom main import app\n\nclient = TestClient(app)\n\ndef test_root():\n    assert client.get("/").json()["message"] == "Hola desde FastAPI"\n\ndef test_health():\n    assert client.get("/healthz").json() == {"ok": True}\n',
+      "requirements.txt":
+        "fastapi==0.121.2\nuvicorn[standard]==0.41.0\npytest==9.0.2\nhttpx==0.28.1\n",
+      ".gitignore": "__pycache__/\n.pytest_cache/\nvenv/\n.env\n",
+      "README.md":
+        "# API con FastAPI\n\n```sh\npython3 -m venv venv\n. venv/bin/activate\npip install -r requirements.txt\nuvicorn main:app --host 0.0.0.0 --port 3000 --reload\n```\n\n- Documentaci\u00f3n autom\u00e1tica en `/docs`.\n- Pruebas: `pytest`.\n",
+    },
+  },
   html: {
     name: "HTML & CSS",
     language: "HTML",

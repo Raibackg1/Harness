@@ -1,5 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { workspaceResources, hosts, namespace, type Project } from "../src/server/kubernetes";
+import {
+  workspaceResources,
+  hosts,
+  namespace,
+  Kubernetes,
+  SANDBOX_POLICIES,
+  publicEventMessage,
+  type Project,
+} from "../src/server/kubernetes";
 import { loadConfig } from "../src/server/config";
 const config = loadConfig({
   KUBERNETES_ENABLED: "true",
@@ -116,5 +124,84 @@ describe("physical stop observations (Kubernetes response fixtures)", () => {
         ? { spec: { replicas: 0 }, status: { replicas: 0 } }
         : { items: [{ status: { phase: "Failed" } }] };
     expect(await k.observe(project.id)).toBe("stopped");
+  });
+});
+
+describe("worker admission boundary self-check", () => {
+  const name = (path: string) => path.split("/").pop() as string;
+  const enforcing = (path: string) =>
+    path.includes("policybindings")
+      ? { spec: { policyName: name(path), validationActions: ["Deny"] } }
+      : { spec: { failurePolicy: "Fail" } };
+  const cluster = (handler: (path: string) => unknown) => {
+    const k = new Kubernetes(config);
+    k.request = async (path) => handler(path);
+    return k;
+  };
+  it("accepts only failing-closed policies with denying bindings", async () => {
+    const report = await cluster(enforcing).sandboxBoundaries();
+    expect(report.ok).toBe(true);
+    expect(report.checks.map((c) => c.name)).toEqual([...SANDBOX_POLICIES]);
+  });
+  it("flags a policy that is absent, open or not enforced by its binding", async () => {
+    const absent = await cluster((path) =>
+      path.includes("policies/harness-workspace-sandbox") ? null : enforcing(path),
+    ).sandboxBoundaries();
+    expect(absent.ok).toBe(false);
+    expect(absent.checks.find((c) => c.name === "harness-workspace-sandbox")?.problems).toContain(
+      "policy not installed",
+    );
+    const open = await cluster((path) =>
+      path.includes("policybindings") ? enforcing(path) : { spec: { failurePolicy: "Ignore" } },
+    ).sandboxBoundaries();
+    expect(open.checks[0].problems.join()).toContain("failurePolicy must be Fail");
+    const audit = await cluster((path) =>
+      path.includes("policybindings")
+        ? { spec: { policyName: name(path), validationActions: ["Audit"] } }
+        : enforcing(path),
+    ).sandboxBoundaries();
+    expect(audit.checks[0].problems.join()).toContain("does not Deny");
+    const foreign = await cluster((path) =>
+      path.includes("policybindings")
+        ? { spec: { policyName: "something-else", validationActions: ["Deny"] } }
+        : enforcing(path),
+    ).sandboxBoundaries();
+    expect(foreign.checks[0].problems.join()).toContain("different policy");
+  });
+  it("fails when the cluster refuses to answer instead of trusting silence", async () => {
+    const report = await cluster(() => {
+      throw new Error("Kubernetes GET /apis/admissionregistration.k8s.io: HTTP 403");
+    }).sandboxBoundaries();
+    expect(report.ok).toBe(false);
+    expect(report.checks.every((c) => c.problems.some((p) => p.includes("unreadable")))).toBe(true);
+  });
+});
+
+describe("cluster events surfaced to project members", () => {
+  const withEvents = async (items: unknown[]) => {
+    const k = new Kubernetes(config);
+    k.request = async () => ({ items });
+    return k.logs(project.id);
+  };
+  it("keeps storage, node and CNI details away from members", async () => {
+    const [event] = await withEvents([
+      {
+        type: "Warning",
+        reason: "FailedMount",
+        message: "unable to attach volume fast-ssd-pool to node ip-10-0-3-4",
+        lastTimestamp: "2026-01-01T00:00:00Z",
+        metadata: {},
+      },
+    ]);
+    expect(event.reason).toBe("FailedMount");
+    expect(event.time).toBe("2026-01-01T00:00:00Z");
+    expect(event.message).not.toContain("fast-ssd-pool");
+    expect(event.message).not.toContain("ip-10-0-3-4");
+    expect(event.message).toContain("volumen");
+  });
+  it("maps known reasons and uses one stable fallback otherwise", () => {
+    expect(publicEventMessage("FailedScheduling")).toContain("programar");
+    expect(publicEventMessage("UnregisteredReason")).toContain("administradora");
+    expect(publicEventMessage(undefined)).toContain("administradora");
   });
 });

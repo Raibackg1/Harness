@@ -33,7 +33,16 @@ it("upgrades existing v1 accounts, session tokens and projects without erasing d
       name: "Existing project",
       runtime_expires_at: null,
     });
-    expect((await db.query("SELECT version FROM schema_migrations")).rows[0].version).toBe(3);
+    expect((await db.query("SELECT version FROM schema_migrations")).rows[0].version).toBe(4);
+    // v4 adds release history; it must arrive empty and cascade with the project.
+    const releases = await db.query("SELECT count(*)::int AS n FROM project_releases");
+    expect(releases.rows[0].n).toBe(0);
+    await db.query("INSERT INTO project_releases(project_id,note,files) VALUES ($1,'legacy',$2)", [
+      id,
+      '{"a.txt":"1"}',
+    ]);
+    await db.query("DELETE FROM projects WHERE id=$1", [id]);
+    expect((await db.query("SELECT count(*)::int AS n FROM project_releases")).rows[0].n).toBe(0);
   } finally {
     await db.close();
   }

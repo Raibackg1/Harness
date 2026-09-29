@@ -18,9 +18,11 @@ import {
   validPath,
 } from "./security.js";
 import { Kubernetes, hosts } from "./kubernetes.js";
-import { templates } from "../shared/templates.js";
+import { templates, type TemplateId } from "../shared/templates.js";
 import { HttpError, audit, type User, type Account } from "./contracts.js";
 import { consumeFactor } from "./mfa.js";
+import { bundleExtras, readArchive } from "./bundle.js";
+import { listReleases, restoreRelease, snapshotRelease } from "./releases.js";
 import { registerSecurityRoutes } from "./security-routes.js";
 import { changeRuntime, capacityReport } from "./runtime-policy.js";
 import {
@@ -39,6 +41,9 @@ const password = z.string().min(12, "Usa al menos 12 caracteres.").max(128);
 const uuid = z.string().uuid();
 const id = (r: FastifyRequest) => uuid.parse((r.params as any).id);
 const userFields = "id,name,email,role,mfa_enabled";
+// One source of truth for templates: a new entry in shared/templates.ts is accepted
+// by the API, seeded and downloadable without touching this file.
+const templateIds = Object.keys(templates) as [TemplateId, ...TemplateId[]];
 const publicProject = `id,name,description,template,desired,status,error,archived,provisioned,published,revision,created_at,updated_at,runtime_expires_at`;
 export async function createApp(config: Config, db: Database, logging = true) {
   await initializeEncryptionKey(db, config.ENCRYPTION_KEY);
@@ -175,15 +180,30 @@ export async function createApp(config: Config, db: Database, logging = true) {
     );
   };
   // Persistent, replica-independent limits for credential endpoints. No dependence on spoofable proxy headers.
-  const authBudget = async (key: string, limit = 12) => {
+  const countAttempt = async (key: string) => {
     const {
       rows: [r],
     } = await db.query(
       `INSERT INTO auth_attempts(key,count,reset_at) VALUES ($1,1,now()+interval '15 minutes') ON CONFLICT(key) DO UPDATE SET count=CASE WHEN auth_attempts.reset_at<now() THEN 1 ELSE auth_attempts.count+1 END, reset_at=CASE WHEN auth_attempts.reset_at<now() THEN now()+interval '15 minutes' ELSE auth_attempts.reset_at END RETURNING count`,
       [hash(key)],
     );
-    if (r.count > limit) throw new HttpError(429, "Demasiados intentos. Espera 15 minutos.");
+    return r.count as number;
   };
+  const budgetSpent = async (key: string, limit = 12) => (await countAttempt(key)) > limit;
+  const authBudget = async (key: string, limit = 12) => {
+    if (await budgetSpent(key, limit))
+      throw new HttpError(429, "Demasiados intentos. Espera 15 minutos.");
+  };
+  // Only the account-scoped key is cleared after a success, so a valid session cannot be
+  // used to launder the shared per-IP budget while guessing other accounts' passwords.
+  const clearBudget = (sql: Sql, key: string) =>
+    sql.query("DELETE FROM auth_attempts WHERE key=$1", [hash(key)]);
+  // Throttling must never lock out the legitimate owner: past the account budget only
+  // failed attempts are rejected, while a correct credential clears the counter and proceeds.
+  const rejected = (spent: boolean, message: string) =>
+    spent
+      ? new HttpError(429, "Demasiados intentos. Espera 15 minutos.")
+      : new HttpError(401, message);
   app.get("/healthz", async () => ({ ok: true }));
   app.get("/readyz", async () => {
     await assertEncryptionKey(db, config.ENCRYPTION_KEY);
@@ -250,14 +270,14 @@ export async function createApp(config: Config, db: Database, logging = true) {
     const input = z
       .object({ email, password: z.string().max(128), code: z.string().max(32).default("") })
       .parse(req.body);
-    await authBudget(`login:${input.email}`);
+    const spent = await budgetSpent(`login:${input.email}`);
     await authBudget(`login-ip:${req.ip}`, 100);
     const {
       rows: [candidate],
     } = await db.query<Account>("SELECT * FROM users WHERE email=$1", [input.email]);
     const valid = await verifyPassword(input.password, candidate?.password_hash || dummyHash);
     if (!candidate || !valid || candidate.suspended_at)
-      throw new HttpError(401, "Correo, contraseña o acceso a la cuenta incorrectos.");
+      throw rejected(spent, "Correo, contraseña o acceso a la cuenta incorrectos.");
     return db.transaction(async (tx) => {
       const {
         rows: [u],
@@ -268,7 +288,8 @@ export async function createApp(config: Config, db: Database, logging = true) {
         throw new HttpError(401, "Vuelve a iniciar sesión.");
       if (u.mfa_secret && !input.code) return { mfaRequired: true };
       if (!(await consumeFactor(tx, config, u, input.code)))
-        throw new HttpError(401, "Código de segundo factor inválido, vencido o ya utilizado.");
+        throw rejected(spent, "Código de segundo factor inválido, vencido o ya utilizado.");
+      await clearBudget(tx, `login:${input.email}`);
       await session(u as User, reply, req, tx);
       await audit(tx, u.id, "account.login");
       return {
@@ -327,9 +348,13 @@ export async function createApp(config: Config, db: Database, logging = true) {
       .object({
         name: z.string().trim().min(2).max(60),
         description: z.string().trim().max(300).default(""),
-        template: z.enum(["react", "node", "python", "html"]),
+        template: z.enum(templateIds),
+        archive: z.string().min(1).max(560_000).optional(),
       })
       .parse(req.body);
+    // "Bring your own code": a ZIP from a forge or your laptop becomes the initial snapshot,
+    // so the platform is not the only way to start a project.
+    const imported = input.archive ? readArchive(input.archive).files : null;
     const pid = randomUUID();
     const p = await db.transaction(async (tx) => {
       await tx.query("SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE", [req.user!.id]);
@@ -353,7 +378,7 @@ export async function createApp(config: Config, db: Database, logging = true) {
           config.ENCRYPTION_KEY ? encrypt(token(), config.ENCRYPTION_KEY, pid) : null,
         ],
       );
-      for (const [path, content] of Object.entries(templates[input.template].files))
+      for (const [path, content] of Object.entries(imported ?? templates[input.template].files))
         await tx.query("INSERT INTO project_files(project_id,path,content) VALUES ($1,$2,$3)", [
           pid,
           path,
@@ -478,6 +503,112 @@ export async function createApp(config: Config, db: Database, logging = true) {
       .header("Content-Disposition", `attachment; filename="harness-${id(req)}-initial.zip"`)
       .type("application/zip");
     return Buffer.from(archive);
+  });
+  const fileRows = async (projectId: string) =>
+    (
+      await db.query("SELECT path,content FROM project_files WHERE project_id=$1 ORDER BY path", [
+        projectId,
+      ])
+    ).rows as { path: string; content: string }[];
+  const secretRowNames = async (projectId: string) =>
+    (
+      await db.query("SELECT name FROM secrets WHERE project_id=$1 ORDER BY name", [projectId])
+    ).rows.map((r: any) => r.name) as string[];
+  // A runnable bundle, not just a code dump: the project must start on any Docker host
+  // without Harness. Secret values stay behind by design; only their names travel.
+  app.get("/api/projects/:id/bundle", { preHandler: auth }, async (req, reply) => {
+    const p = await project(req);
+    const rows = await fileRows(p.id);
+    const files = Object.fromEntries(rows.map((f) => [f.path, f.content]));
+    const extra = bundleExtras({
+      name: p.name,
+      template: p.template,
+      files,
+      secretNames: await secretRowNames(p.id),
+    });
+    const merged = { ...files, ...extra.files };
+    const archive = zipSync(
+      Object.fromEntries(Object.entries(merged).map(([k, v]) => [k, strToU8(v)])),
+    );
+    reply
+      .header("Content-Disposition", 'attachment; filename="harness-' + p.id + '-bundle.zip"')
+      .type("application/zip");
+    return Buffer.from(archive);
+  });
+  const importBody = z.object({
+    archive: z
+      .string()
+      .min(1)
+      .max(560_000, "El ZIP debe pesar menos de ~410 KB (el cuerpo máximo de la API es 600 KB)."),
+    mode: z.enum(["replace", "merge"]).default("merge"),
+  });
+  app.post("/api/projects/:id/import", { preHandler: auth }, async (req) => {
+    const input = importBody.parse(req.body);
+    const read = readArchive(input.archive);
+    return db.transaction(async (tx) => {
+      const p = await project(req, tx, true);
+      if (p.provisioned || p.desired !== "stopped")
+        throw new HttpError(
+          409,
+          "Los archivos activos se editan en el IDE. Esta importación escribe el código inicial.",
+        );
+      if (input.mode === "replace")
+        await tx.query("DELETE FROM project_files WHERE project_id=$1", [p.id]);
+      let imported = 0;
+      for (const [path, content] of Object.entries(read.files)) {
+        const r = await tx.query(
+          "INSERT INTO project_files(project_id,path,content) VALUES ($1,$2,$3) ON CONFLICT(project_id,path) DO UPDATE SET content=EXCLUDED.content, version=project_files.version+1 RETURNING version",
+          [p.id, path, content],
+        );
+        if (r.rows.length) imported++;
+      }
+      await tx.query("UPDATE projects SET updated_at=now() WHERE id=$1", [p.id]);
+      await audit(
+        tx,
+        req.user!.id,
+        "project.imported",
+        p.id,
+        imported + " archivos en modo " + input.mode,
+      );
+      return { imported, skipped: read.skipped };
+    });
+  });
+  app.get("/api/projects/:id/releases", { preHandler: auth }, async (req) => {
+    await project(req);
+    return listReleases(db, id(req));
+  });
+  app.post("/api/projects/:id/releases", { preHandler: auth }, async (req) => {
+    const { note } = z
+      .object({ note: z.string().trim().max(200).default("") })
+      .parse(req.body ?? {});
+    return db.transaction(async (tx) => {
+      const p = await project(req, tx, true);
+      const releaseId = await snapshotRelease(tx, p.id, note || "Instantánea manual");
+      await audit(tx, req.user!.id, "release.snapshot", p.id, note);
+      return { id: releaseId };
+    });
+  });
+  app.post("/api/projects/:id/releases/:release/rollback", { preHandler: auth }, async (req) => {
+    const { force } = z.object({ force: z.boolean().default(false) }).parse(req.body ?? {});
+    const releaseId = z.coerce
+      .number()
+      .int()
+      .positive()
+      .parse((req.params as any).release);
+    return db.transaction(async (tx) => {
+      const p = await project(req, tx, true);
+      if (p.provisioned || p.desired !== "stopped")
+        throw new HttpError(
+          409,
+          "Restaurar reemplaza el código inicial; hazlo con el entorno detenido y sin aprovisionar.",
+        );
+      return restoreRelease(tx, {
+        projectId: p.id,
+        userId: req.user!.id,
+        releaseId,
+        force,
+      });
+    });
   });
   app.post("/api/projects/:id/runtime", { preHandler: auth }, async (req) => {
     const { action } = z
@@ -649,13 +780,22 @@ export async function createApp(config: Config, db: Database, logging = true) {
   app.post("/api/infrastructure/check", { preHandler: owner }, async () => {
     if (config.KUBERNETES_ENABLED !== "true")
       throw new HttpError(503, "No hay un clúster conectado. Sigue la guía de instalación.");
-    const version = await k8s.check();
+    const [version, boundaries] = await Promise.all([k8s.check(), k8s.sandboxBoundaries()]);
+    if (!boundaries.ok)
+      throw new HttpError(
+        503,
+        `Falta la frontera de admisión del worker: ${boundaries.checks
+          .filter((c) => !c.ok)
+          .map((c) => `${c.name} (${c.problems.join("; ")})`)
+          .join(", ")}. Instala infra/k8s/admission.yaml antes de aceptar entornos.`,
+      );
     return {
       ok: true,
       version: version.gitVersion,
       checkedAt: new Date().toISOString(),
+      boundaries: boundaries.checks,
       notice:
-        "La API y RuntimeClass responden. Esto no valida el aislamiento, CNI, DNS ni certificados.",
+        "La API, RuntimeClass y las políticas de admisión responden. Esto no valida el aislamiento, CNI, DNS ni certificados.",
     };
   });
   app.setErrorHandler((error, req, reply) => {

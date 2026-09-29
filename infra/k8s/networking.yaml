@@ -56,9 +56,15 @@ spec:
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
-    # Tailor to your actual API-server and PostgreSQL endpoints. Some CNIs evaluate
-    # pre-DNAT ports, so verify the API-server's real target port (often 6443).
-    - ports:
+    # Pin the real endpoints. An unbounded rule turns the control plane into an egress
+    # proxy for whoever compromises a container here, and the API pod mounts a cluster
+    # token. Some CNIs evaluate pre-DNAT ports, so verify the API server's real target
+    # port (often 6443). Replace both CIDRs before applying: the placeholders are not
+    # valid CIDRs, so dry-run/apply fails on purpose (docs/DEPLOYMENT.md, step 5).
+    - to:
+        - ipBlock: { cidr: REPLACE_WITH_API_SERVER_CIDR }
+        - ipBlock: { cidr: REPLACE_WITH_POSTGRES_CIDR }
+      ports:
         - { protocol: TCP, port: 443 }
         - { protocol: TCP, port: 6443 }
         - { protocol: TCP, port: 5432 }

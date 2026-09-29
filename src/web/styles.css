@@ -1158,6 +1158,11 @@ main {
   color: #b29a52;
   border-color: #f1ecd6;
 }
+.template-icon.fastapi {
+  background: #eef8f6;
+  color: #1f9e8c;
+  border-color: #d9ece8;
+}
 .template-icon.html {
   background: #fbf1ec;
   color: #ce9678;
@@ -2039,6 +2044,13 @@ footer > span:last-child {
   display: flex;
   align-items: center;
   gap: 7px;
+}
+.editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 .editor-info + .notice {
   margin-bottom: 15px;

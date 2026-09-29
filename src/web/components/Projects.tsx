@@ -14,6 +14,8 @@ import {
   Globe,
   Grid2X2,
   KeyRound,
+  Package,
+  FolderUp,
   List,
   Lock,
   Play,
@@ -27,7 +29,7 @@ import {
   Terminal,
   Trash2,
 } from "lucide-react";
-import React, { useCallback, useEffect, useState, type FormEvent } from "react";
+import React, { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { templates } from "../../shared/templates";
 import {
   allowNavigation,
@@ -378,7 +380,10 @@ export function ProjectView({
         ))}
       </div>
       {tab === "files" ? (
-        <FileEditor project={p} notify={notify} />
+        <>
+          <FileEditor project={p} notify={notify} />
+          <ReleasesPanel project={p} notify={notify} />
+        </>
       ) : tab === "runtime" ? (
         <>
           <div className="runtime-grid">
@@ -519,13 +524,141 @@ interface SourceFile {
   content: string;
   version: number;
 }
+function ReleasesPanel({ project, notify }: { project: Project; notify: Notify }) {
+  const [rows, setRows] = useState<any[] | null>(null),
+    [note, setNote] = useState(""),
+    [busy, setBusy] = useState("");
+  const locked = project.provisioned || project.desired !== "stopped";
+  const load = useCallback(async () => {
+    try {
+      setRows(await api(`/projects/${project.id}/releases`));
+    } catch (e) {
+      notify((e as Error).message, true);
+      setRows([]);
+    }
+  }, [project.id, notify]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  async function snapshot(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setBusy("new");
+    try {
+      await api(`/projects/${project.id}/releases`, send("POST", { note }));
+      e.currentTarget.reset();
+      setNote("");
+      notify("Instantánea guardada.");
+      await load();
+    } catch (error) {
+      notify((error as Error).message, true);
+    } finally {
+      setBusy("");
+    }
+  }
+  async function restore(row: any) {
+    setBusy(String(row.id));
+    const call = (force: boolean) =>
+      api(`/projects/${project.id}/releases/${row.id}/rollback`, send("POST", { force }));
+    try {
+      await call(false);
+      notify("Versión restaurada en el código inicial.");
+    } catch (e) {
+      const message = (e as Error).message;
+      if (!message.includes("Confirma el reemplazo") || !confirm(message + " ¿Continuar?")) {
+        notify(message, true);
+        setBusy("");
+        return;
+      }
+      try {
+        await call(true);
+        notify("Versión restaurada en el código inicial.");
+      } catch (second) {
+        notify((second as Error).message, true);
+      }
+    } finally {
+      setBusy("");
+      await load();
+    }
+  }
+  const format = new Intl.DateTimeFormat("es-AR", { dateStyle: "medium", timeStyle: "short" });
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <div>
+          <h2>Versiones del código inicial</h2>
+          <p>
+            Cada publicación guarda el código del que se sembró el entorno, y puedes volver a él.
+            Restaurar reescribe el código inicial: no toca un volumen ya aprovisionado, y ahí es
+            donde manda git.
+          </p>
+        </div>
+      </div>
+      {!locked && (
+        <form className="stack-form" onSubmit={snapshot}>
+          <input
+            value={note}
+            maxLength={200}
+            placeholder="Nota de esta instantánea (opcional)"
+            aria-label="Nota de la instantánea"
+            onChange={(e) => setNote(e.target.value)}
+          />
+          <Button type="submit" variant="secondary" busy={busy === "new"}>
+            <Save size={15} />
+            Guardar instantánea
+          </Button>
+        </form>
+      )}
+      {rows === null ? (
+        <Loading />
+      ) : rows.length ? (
+        <div className="activity-list">
+          {rows.map((r) => (
+            <div key={String(r.id)} className="activity-row">
+              <span className="activity-icon">
+                <Save size={15} />
+              </span>
+              <div>
+                <strong>{r.note || "Versión " + r.id}</strong>
+                <p>
+                  {format.format(new Date(r.created_at))} · {r.file_count} archivos ·{" "}
+                  {Math.round(r.bytes / 1024)} KB
+                  {r.secret_names.length ? " · " + r.secret_names.length + " variables" : ""}
+                </p>
+              </div>
+              <Button
+                variant="ghost"
+                onClick={() => void restore(r)}
+                busy={busy === String(r.id)}
+                disabled={locked}
+                title={
+                  locked
+                    ? "El código inicial queda bloqueado al aprovisionar el entorno"
+                    : "Volver a este estado"
+                }
+              >
+                Restaurar
+              </Button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <Notice>
+          Todavía no hay versiones. La próxima publicación creará la primera, o guarda una
+          instantánea manual ahora.
+        </Notice>
+      )}
+    </section>
+  );
+}
 function FileEditor({ project, notify }: { project: Project; notify: Notify }) {
   const [files, setFiles] = useState<SourceFile[] | null>(null),
     [current, setCurrent] = useState(""),
     [content, setContent] = useState(""),
     [error, setError] = useState(""),
     [saving, setSaving] = useState(false),
-    [newFile, setNewFile] = useState(false);
+    [newFile, setNewFile] = useState(false),
+    [importing, setImporting] = useState(false);
+  const archiveInput = useRef<HTMLInputElement | null>(null);
   const active = files?.find((f) => f.path === current);
   const dirty = !!active && active.content !== content;
   const locked = project.provisioned || project.desired !== "stopped";
@@ -582,6 +715,39 @@ function FileEditor({ project, notify }: { project: Project; notify: Notify }) {
       setSaving(false);
     }
   }
+  const importArchive = async (file: File) => {
+    // The API caps request bodies at 600 KB; fail here with a message the user can act on.
+    if (file.size > 400_000) {
+      notify("El ZIP supera 400 KB. Importa solo el código inicial, sin dependencias.", true);
+      return;
+    }
+    setImporting(true);
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      let binary = "";
+      for (const byte of bytes) binary += String.fromCharCode(byte);
+      const mode = locked
+        ? "merge"
+        : confirm(
+              "¿Reemplazar todo el código inicial? «Cancelar» solo agrega y actualiza archivos.",
+            )
+          ? "replace"
+          : "merge";
+      const result = await api(
+        `/projects/${project.id}/import`,
+        send("POST", { archive: btoa(binary), mode }),
+      );
+      await load();
+      notify(
+        `Importados ${result.imported} archivos` +
+          (result.skipped.length ? `; ${result.skipped.length} ignorados.` : "."),
+      );
+    } catch (e) {
+      notify((e as Error).message, true);
+    } finally {
+      setImporting(false);
+    }
+  };
   if (error)
     return (
       <Notice tone="warning">
@@ -601,10 +767,37 @@ function FileEditor({ project, notify }: { project: Project; notify: Notify }) {
             ? "Instantánea inicial · Solo lectura"
             : "Código inicial · Almacenado en PostgreSQL"}
         </span>
-        <a href={`/api/projects/${project.id}/export`} className="text-link">
-          <Download size={14} />
-          Exportar ZIP inicial
-        </a>
+        <div className="editor-actions">
+          <a href={`/api/projects/${project.id}/export`} className="text-link">
+            <Download size={14} />
+            Exportar ZIP inicial
+          </a>
+          <a href={`/api/projects/${project.id}/bundle`} className="text-link">
+            <Package size={14} />
+            Paquete ejecutable (Docker)
+          </a>
+          {!locked && (
+            <button
+              className="text-link"
+              disabled={importing}
+              onClick={() => archiveInput.current?.click()}
+            >
+              <FolderUp size={14} />
+              {importing ? "Importando…" : "Importar ZIP"}
+            </button>
+          )}
+          <input
+            ref={archiveInput}
+            type="file"
+            accept="application/zip,.zip"
+            hidden
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (file) void importArchive(file);
+            }}
+          />
+        </div>
       </div>
       {locked && (
         <Notice>
