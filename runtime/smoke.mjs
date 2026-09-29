@@ -80,7 +80,7 @@ async function launch(host, target) {
     body: "ticket=" + raw,
   });
   expect(`${target}: same ticket rejected on reuse`, replay.status, 403);
-  return cookie;
+  return { cookie, location: String(first.headers.location || "") };
 }
 
 const started = Date.now();
@@ -109,7 +109,7 @@ expect(
   ).status,
   403,
 );
-const ideCookie = await launch(env.IDE_HOST, "ide");
+const { cookie: ideCookie } = await launch(env.IDE_HOST, "ide");
 const ide = await call("/?folder=/home/coder/project", {
   host: env.IDE_HOST,
   headers: { cookie: ideCookie },
@@ -122,11 +122,26 @@ expect(
   (await call("/", { host: env.AI_HOST, headers: { cookie: ideCookie } })).status,
   401,
 );
-const agentCookie = await launch(env.AI_HOST, "agent");
-expect(
-  "DeepSeek Harness web served through the gateway",
-  (await call("/", { host: env.AI_HOST, headers: { cookie: agentCookie } })).status,
-  200,
-);
+const agent = await launch(env.AI_HOST, "agent");
+if (!agent.location.startsWith("/?token="))
+  throw new Error(`agent launch did not hand over the dsh web token (Location: ${agent.location})`);
+console.log("ok - agent launch hands over the dsh web token");
+// The browser follows the redirect; dsh swaps its token for its own cookie.
+const handoff = await call(agent.location, {
+  host: env.AI_HOST,
+  headers: { cookie: agent.cookie },
+});
+const dshCookies = [handoff.headers["set-cookie"] || []]
+  .flat()
+  .map((c) => String(c).split(";")[0])
+  .filter((c) => !c.startsWith("__Host-harness-workspace="));
+if (handoff.status >= 400 || !dshCookies.length)
+  throw new Error(`dsh did not accept its token through the gateway (HTTP ${handoff.status})`);
+console.log(`ok - dsh accepted its token through the gateway (HTTP ${handoff.status})`);
+const agentPage = await call("/", {
+  host: env.AI_HOST,
+  headers: { cookie: [agent.cookie, ...dshCookies].join("; ") },
+});
+expect("DeepSeek Harness web served through the gateway", agentPage.status, 200);
 expect("unpublished app is not exposed", (await call("/", { host: env.APP_HOST })).status, 404);
 console.log(`smoke passed in ${Math.round((Date.now() - started) / 1000)}s`);

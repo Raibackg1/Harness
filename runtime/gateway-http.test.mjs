@@ -17,7 +17,8 @@ const env = {
   APP_HOST: "app.runtime.net",
   PUBLISHED: "false",
 };
-let backend, gateway, base, wss;
+let backend, gateway, base, wss, agentGateway, agentBase;
+let agentToken = null;
 const listen = (server) =>
   new Promise((resolve) =>
     server.listen(0, "127.0.0.1", () => resolve(`http://127.0.0.1:${server.address().port}`)),
@@ -51,22 +52,31 @@ before(async () => {
   const upstream = await listen(backend);
   gateway = createGateway({ env, key, targets: { ide: upstream, agent: upstream, app: upstream } });
   base = await listen(gateway);
+  agentGateway = createGateway({
+    env,
+    key,
+    targets: { ide: upstream, agent: upstream, app: upstream },
+    agentToken: async () => agentToken,
+  });
+  agentBase = await listen(agentGateway);
 });
 after(async () => {
   for (const ws of wss.clients) ws.terminate();
   wss.close();
   gateway.closeAllConnections();
+  agentGateway.closeAllConnections();
   backend.closeAllConnections();
   await close(gateway);
+  await close(agentGateway);
   await close(backend);
 });
 function call(
   path = "/",
-  { method = "GET", host = env.IDE_HOST, origin, cookie, body = "", headers = {} } = {},
+  { method = "GET", host = env.IDE_HOST, origin, cookie, body = "", headers = {}, via = base } = {},
 ) {
   return new Promise((resolve, reject) => {
     const req = request(
-      base + path,
+      via + path,
       {
         method,
         headers: { host, ...(origin ? { origin } : {}), ...(cookie ? { cookie } : {}), ...headers },
@@ -122,6 +132,37 @@ test("POST launch checks origin, exchanges once, redirects without leaking ticke
     (await call("/_harness/launch", { method: "POST", origin: env.APP_ORIGIN, body })).status,
     403,
   );
+});
+test("agent launch hands over the dsh web process token, and waits until it exists", async () => {
+  const launch = async (t) =>
+    call("/_harness/launch", {
+      method: "POST",
+      host: env.AI_HOST,
+      origin: env.APP_ORIGIN,
+      body: new URLSearchParams({ ticket: t }).toString(),
+      via: agentBase,
+    });
+  agentToken = null;
+  const early = await ticket(env.AI_HOST, "agent");
+  const waiting = await launch(early);
+  assert.equal(waiting.status, 503);
+  assert.equal(waiting.headers["set-cookie"], undefined);
+  agentToken = "process-token/with+chars";
+  // The ticket was not burnt while the agent was starting, so the same launch can be retried.
+  const ready = await launch(early);
+  assert.equal(ready.status, 303);
+  assert.equal(ready.headers.location, "/?token=" + encodeURIComponent(agentToken));
+  assert.match(ready.headers["set-cookie"][0], /Secure; HttpOnly; SameSite=Lax/);
+  assert.equal((await launch(early)).status, 403);
+  // The IDE never receives the agent's token.
+  const ide = await call("/_harness/launch", {
+    method: "POST",
+    origin: env.APP_ORIGIN,
+    body: new URLSearchParams({ ticket: await ticket() }).toString(),
+    via: agentBase,
+  });
+  assert.equal(ide.status, 303);
+  assert.ok(!ide.headers.location.includes("token"));
 });
 test("authenticated HTTP proxies path/body and strips platform cookies and forwarded headers", async () => {
   const cookie = await login();

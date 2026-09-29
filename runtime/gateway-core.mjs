@@ -17,6 +17,9 @@ export function createGateway({
     agent: "http://127.0.0.1:3080",
     app: "http://127.0.0.1:3000",
   },
+  // dsh web authenticates browsers with a per-process token it prints at startup; the
+  // browser must visit /?token= once to get dsh's own cookie. Returns null until known.
+  agentToken = async () => null,
 }) {
   for (const name of ["PROJECT_ID", "APP_ORIGIN", "IDE_HOST", "AI_HOST", "APP_HOST"])
     if (!env[name]) throw new Error(`${name} is required`);
@@ -107,11 +110,20 @@ export function createGateway({
           res.writeHead(403);
           return res.end("Ticket already used or invalid");
         }
+        const handoff = target === "agent" ? await agentToken() : null;
+        // Checked before burning the ticket, so the same launch can simply be retried.
+        if (target === "agent" && !handoff) {
+          res.writeHead(503, { "Content-Type": "text/plain; charset=utf-8", "Retry-After": "3" });
+          return res.end("El agente todavía está arrancando. Vuelve a abrirlo en unos segundos.");
+        }
         used.set(p.jti, Date.now() + 70000);
         const session = await issueSession(p, key, host);
         res.writeHead(303, {
           "Set-Cookie": `${COOKIE}=${session}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=1800`,
-          Location: target === "ide" ? "/?folder=/home/coder/project" : "/",
+          Location:
+            target === "ide"
+              ? "/?folder=/home/coder/project"
+              : "/?token=" + encodeURIComponent(handoff),
         });
         return res.end();
       }
