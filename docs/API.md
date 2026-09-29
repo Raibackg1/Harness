@@ -24,6 +24,9 @@ Todas las mutaciones requieren `Origin` igual a `APP_ORIGIN` (en desarrollo sin 
 | GET              | `/projects/:id/releases`                   | Versiones del código inicial: `id,note,created_at,file_count,bytes,secret_names`                                          |
 | POST             | `/projects/:id/releases`                   | `{note}` instantánea manual; conserva las últimas 20                                                                      |
 | POST             | `/projects/:id/releases/:release/rollback` | `{force:boolean}`; 409 si el estado actual difiere y `force` es falso                                                     |
+| GET              | `/projects/:id/members`                    | Titular y miembros: `id,name,email,role` (`owner`, `editor`, `viewer`). Cualquier persona con acceso                      |
+| PUT              | `/projects/:id/members`                    | `{email, role: "editor"\|"viewer"}`; solo titular. 404 si no hay cuenta activa con ese correo                             |
+| DELETE           | `/projects/:id/members/:user`              | Retira el acceso; solo titular. Enviar `{}` como cuerpo JSON                                                              |
 | GET, PUT, DELETE | `/projects/:id/secrets`                    | Metadatos / guarda `name,value` / elimina `name`                                                                          |
 | POST             | `/projects/:id/runtime`                    | `action`: start, stop, restart, publish, unpublish                                                                        |
 | POST             | `/projects/:id/launch`                     | `target`: ide o agent; devuelve URL fija y ticket de un uso                                                               |
@@ -38,6 +41,8 @@ Todas las mutaciones requieren `Origin` igual a `APP_ORIGIN` (en desarrollo sin 
 `POST /api/projects` acepta además `archive`: un ZIP en base64 (hasta 560.000 caracteres) con el que el proyecto nace de tu código en vez del de la plantilla; se ignoran directorios, `node_modules`, `__MACOSX`, `.DS_Store`, binarios y rutas inseguras, y se quita una carpeta raíz común (la que agregan los forjadores). Restaurar una versión escribe el código inicial: exige entorno detenido y sin aprovisionar, igual que editar archivos.
 
 Plantillas: `react`, `node`, `python`, `fastapi`, `html`. `HARNESS_SANDBOX_MEMORY` ajusta el límite de memoria del sandbox (256 Mi por defecto, mínimo 256 Mi) y se rechaza si se fija como variable de despliegue: un valor de entorno accesible al personal de plataforma no puede cambiar el límite de aislamiento de un multiinquilino.
+
+**Acceso compartido.** `GET /projects` y `GET /projects/:id` incluyen `role`. Sin acceso: 404 (no se revela que el proyecto existe). Lector: lectura de proyecto, archivos, ZIP, paquete, versiones, eventos y miembros. Editor: además edita archivos, importa, crea y restaura versiones y abre IDE/agente (dentro del entorno ve las variables). Solo titular: iniciar/detener/publicar (consume su cupo), variables, ajustes, borrado y miembros; si no, 403.
 
 Cada `publish` registra una versión del código en `project_releases`; se conservan las 20 más recientes y las anteriores siguen disponibles para auditar. Contraseñas: 12–128 caracteres. Nombre de proyecto: 2–60. Máximo 50 archivos iniciales, 100.000 caracteres por archivo, 450 KB acumulados (UTF-8); variables: 40 por proyecto, hasta 8.192 caracteres cada valor.
 

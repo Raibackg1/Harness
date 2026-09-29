@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        suite: [api, account-security, runtime-policy, encryption-maintenance, portability]
+        suite: [api, account-security, runtime-policy, encryption-maintenance, portability, sharing]
     services:
       postgres:
         image: postgres:17.6

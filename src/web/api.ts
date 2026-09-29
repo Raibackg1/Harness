@@ -24,7 +24,9 @@ export interface Project {
   id: string;
   name: string;
   description: string;
-  template: "react" | "node" | "python" | "html";
+  template: "react" | "node" | "python" | "fastapi" | "html";
+  /** The caller's access: owners manage everything, editors change code, viewers read. */
+  role: "owner" | "editor" | "viewer";
   status: string;
   desired: string;
   archived: boolean;

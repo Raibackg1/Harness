@@ -89,6 +89,15 @@ export async function migrate(db: Database) {
       await tx.query("CREATE INDEX releases_project ON project_releases(project_id,id DESC)");
       await tx.query("UPDATE schema_migrations SET version=4 WHERE id=1");
     }
+    if (row.version < 5) {
+      // Project sharing. The owner stays in projects.owner_id; this table only grants
+      // other accounts viewer or editor access. Rollback: DROP TABLE project_members.
+      await tx.query(
+        "CREATE TABLE project_members (project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE, user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE, role text NOT NULL CHECK (role IN ('viewer','editor')), added_by uuid REFERENCES users(id), created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(project_id,user_id))",
+      );
+      await tx.query("CREATE INDEX project_members_user ON project_members(user_id)");
+      await tx.query("UPDATE schema_migrations SET version=5 WHERE id=1");
+    }
   });
 }
 const schema = `
