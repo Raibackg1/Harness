@@ -20,18 +20,9 @@ jobs:
       - run: npm audit --omit=dev --audit-level=high
       - run: npm audit --prefix runtime --omit=dev --audit-level=high
       - run: npx playwright install --with-deps chromium
+      # playwright.config.ts starts its own server on a wiped, throwaway embedded database.
       - name: Browser workflows against isolated storage
-        env:
-          DATA_DIR: .cache/ci-postgres
-          PORT: "3100"
-          APP_ORIGIN: http://127.0.0.1:3100
-          ENCRYPTION_KEY: abababababababababababababababababababababababababababababababab
-        run: |
-          npm run dev > /tmp/harness-ci.log 2>&1 &
-          PID=$!
-          trap 'kill $PID 2>/dev/null || true' EXIT
-          npx wait-on http-get://127.0.0.1:3100/readyz
-          E2E_BASE_URL=http://127.0.0.1:3100 npm run test:e2e
+        run: npm run test:e2e
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
