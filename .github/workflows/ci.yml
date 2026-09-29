@@ -41,12 +41,44 @@ jobs:
           tags: harness-control:ci
   build-workspace-image:
     runs-on: ubuntu-latest
+    env:
+      PROJECT_ID: 00000000-0000-4000-8000-000000000001
+      APP_ORIGIN: https://harness.example
+      IDE_HOST: ide.workspace.example
+      AI_HOST: ai.workspace.example
+      APP_HOST: app.workspace.example
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: runtime/package-lock.json
       - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
         with:
           context: .
           file: runtime/Dockerfile
           push: false
+          load: true
           tags: harness-workspace:ci
+      - run: npm ci --prefix runtime
+      # Same posture as the Pod in src/server/kubernetes.ts: uid 1000, read-only root, no
+      # capabilities, an empty home volume and an ephemeral /tmp. gVisor is not available here.
+      - name: Boot the workspace image and drive it through the gateway
+        run: |
+          mkdir -p "$RUNNER_TEMP/gateway" "$RUNNER_TEMP/seed"
+          openssl rand -hex 32 > "$RUNNER_TEMP/gateway/key"
+          echo '{"index.html":"<h1>seeded by smoke</h1>"}' > "$RUNNER_TEMP/seed/files.json"
+          chmod -R a+rX "$RUNNER_TEMP/gateway" "$RUNNER_TEMP/seed"
+          docker run -d --name workspace -p 127.0.0.1:8088:8088 \
+            --user 1000:1000 --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /home/coder:uid=1000,gid=1000,exec --tmpfs /tmp:exec \
+            -v "$RUNNER_TEMP/gateway:/run/gateway:ro" -v "$RUNNER_TEMP/seed:/run/seed:ro" \
+            -e PROJECT_ID -e APP_ORIGIN -e IDE_HOST -e AI_HOST -e APP_HOST -e PUBLISHED=false \
+            harness-workspace:ci
+          GATEWAY_KEY_FILE="$RUNNER_TEMP/gateway/key" node runtime/smoke.mjs
+          docker exec workspace cat /home/coder/project/index.html | grep -q "seeded by smoke"
+      - name: Workspace logs
+        if: always()
+        run: docker logs workspace 2>&1 | tail -200 || true
