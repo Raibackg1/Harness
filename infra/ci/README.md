@@ -1,29 +1,21 @@
-# CI pendiente de activación
+# Integración continua
 
-Estas definiciones se conservan en `templates/` como **archivos no activos**:
+Las definiciones activas viven en `.github/workflows/`:
 
-- `ci.yml`: formato, TypeScript, tests, compilación, gateway, auditorías de dependencias, navegador con DB aislada y construcción de las dos imágenes OCI.
+- `ci.yml`: formato, TypeScript, pruebas, compilación, gateway, auditorías de dependencias, navegador con base aislada (`npm run test:e2e` arranca su propio servidor sobre una PGlite desechable) y construcción de las dos imágenes OCI sin publicarlas.
 - `postgres.yml`: suites de API, seguridad de cuenta, capacidad y rotación de clave sobre un servicio PostgreSQL 17.6.
 
-## Por qué no están en `.github/workflows/`
+`templates/` conserva copias idénticas de la primera activación. **La fuente de verdad es `.github/workflows/`**; cuando la CI haya corrido en verde en GitHub, retirar `templates/` para evitar divergencias.
 
-GitHub rechazó la subida con la conexión de Arena porque la GitHub App no tiene permiso `workflows`. La conexión sí permite publicar el código. Guardar las definiciones como plantillas permite revisarlas sin activar automatizaciones ni ampliar permisos.
+## Qué significa y qué no
 
-**No hay CI activa suministrada por este cambio y no se declara ningún resultado de GitHub Actions.** Las comprobaciones locales documentadas en el README no equivalen a la construcción de imágenes o aceptación en tu infraestructura.
+- Un workflow definido no es un workflow aprobado: el resultado vale cuando aparece en la pestaña Actions del repositorio.
+- Configurar los checks como requeridos en la protección de rama es una decisión del mantenedor.
+- La CI no sustituye las pruebas de Kubernetes, aislamiento, DNS/TLS, proveedor de IA y recuperación descritas en `docs/RELEASE-GATES.md`.
 
-## Activación por un mantenedor autorizado
-
-1. Revisar ambas definiciones, sus acciones, permisos, imágenes y consumo de recursos.
-2. Usar una conexión de GitHub autorizada para modificar workflows; si se usa Arena, actualizar/reconectar su integración. No compartir credenciales en el chat ni guardarlas en Git.
-3. Copiar las plantillas a las rutas reconocidas por GitHub, revisar el diff y subir ese cambio con la conexión autorizada:
+## Ciclo local equivalente
 
 ```bash
-mkdir -p .github/workflows
-cp infra/ci/templates/ci.yml .github/workflows/ci.yml
-cp infra/ci/templates/postgres.yml .github/workflows/postgres.yml
+npm ci
+npm run verify   # formato + check + gateway + navegador
 ```
-
-4. Verificar las ejecuciones reales en Actions, investigar fallos y configurar los checks requeridos en las reglas de protección correspondientes. No confundir ausencia de checks con aprobación.
-5. Mantener una única fuente activa: una vez aprobada la activación, retirar o actualizar estas plantillas y esta nota para evitar divergencias.
-
-Esto no sustituye las pruebas de Kubernetes, aislamiento, DNS/TLS, proveedor de IA y recuperación descritas en `docs/RELEASE-GATES.md`.

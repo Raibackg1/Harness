@@ -133,7 +133,7 @@ Crear esas cuatro bases vacías por separado antes de ejecutar. No utilizar base
 - `npm audit --omit=dev`: sin vulnerabilidades conocidas reportadas al ejecutar la comprobación. No es una auditoría de seguridad de la aplicación.
 - **No comprobados aquí:** Dockerfiles construidos, ejecución de Kubernetes, CEL/admission en el servidor API, CNI, gVisor/Kata, PVC, DNS, TLS, proveedor de IA, SMTP, carga, backups o restauración en producción.
 
-Las definiciones de CI incluyen construcción de imágenes y una suite con PostgreSQL externo. Se conservan como **plantillas no activas** en `infra/ci/templates/`: la conexión actual de GitHub no permite escribir workflows. **Este PR no activa GitHub Actions ni se afirma que haya pasado CI en GitHub.** Un mantenedor autorizado debe revisar y activar las plantillas siguiendo [infra/ci/README.md](infra/ci/README.md).
+La CI está en `.github/workflows/`: `ci.yml` (formato, TypeScript, pruebas, compilación, gateway, auditorías de dependencias, navegador con base aislada y construcción de las dos imágenes OCI) y `postgres.yml` (suites sobre PostgreSQL 17.6). Se activan con la rama que las introduce; **un resultado verde solo cuenta cuando aparece en GitHub Actions**, no por estar definida. Ver [infra/ci/README.md](infra/ci/README.md).
 
 ## Documentación de instalación y operación
 
