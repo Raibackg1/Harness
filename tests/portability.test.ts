@@ -31,6 +31,7 @@ beforeAll(async () => {
   const c = loadConfig({
     NODE_ENV: "test",
     DATA_DIR: "memory://",
+    DATABASE_URL: process.env.TEST_DATABASE_URL,
     ENCRYPTION_KEY: "ab".repeat(32),
     APP_ORIGIN: origin,
   });
@@ -162,6 +163,76 @@ describe("release history of the seeded code", () => {
     const restored = (await call("GET", `/api/projects/${projectId}/files`)).json();
     expect(restored).toHaveLength(1);
     expect(restored[0]).toMatchObject({ path: "solo.js", content: "3\n" });
+  });
+  it("never lets an editor opened before a restore or a replacing import overwrite it", async () => {
+    const files = async () => (await call("GET", `/api/projects/${projectId}/files`)).json();
+    const save = (version: number) =>
+      call("PUT", `/api/projects/${projectId}/files`, {
+        path: "solo.js",
+        content: "stale\n",
+        version,
+      });
+    await call("POST", `/api/projects/${projectId}/import`, {
+      archive: archive({ "solo.js": "Y\n" }),
+      mode: "replace",
+    });
+    const releaseY = (
+      await call("POST", `/api/projects/${projectId}/releases`, { note: "Y" })
+    ).json().id;
+    await call("POST", `/api/projects/${projectId}/import`, {
+      archive: archive({ "solo.js": "X\n" }),
+      mode: "replace",
+    });
+    const staleBeforeRestore = (await files())[0];
+    expect(staleBeforeRestore.content).toBe("X\n");
+    expect(
+      (
+        await call("POST", `/api/projects/${projectId}/releases/${releaseY}/rollback`, {
+          force: true,
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect((await save(staleBeforeRestore.version)).statusCode).toBe(409);
+    const staleBeforeImport = (await files())[0];
+    expect(staleBeforeImport.content).toBe("Y\n");
+    await call("POST", `/api/projects/${projectId}/import`, {
+      archive: archive({ "solo.js": "Z\n" }),
+      mode: "replace",
+    });
+    expect((await save(staleBeforeImport.version)).statusCode).toBe(409);
+    expect((await files())[0].content).toBe("Z\n");
+  });
+  it("enforces the project-wide file limits when merging an import", async () => {
+    const batch = (prefix: string, n: number) =>
+      Object.fromEntries(Array.from({ length: n }, (_, i) => [`${prefix}${i}.js`, "x\n"]));
+    const count = async () => (await call("GET", `/api/projects/${projectId}/files`)).json().length;
+    expect(
+      (
+        await call("POST", `/api/projects/${projectId}/import`, {
+          archive: archive(batch("a", 40)),
+        })
+      ).statusCode,
+    ).toBe(200);
+    const before = await count();
+    const over = await call("POST", `/api/projects/${projectId}/import`, {
+      archive: archive(batch("b", 40)),
+    });
+    expect(over.statusCode).toBe(409);
+    expect(over.json().error).toContain("Máximo 50 archivos iniciales");
+    expect(await count()).toBe(before);
+    const big = "y".repeat(90_000);
+    const heavy = await call("POST", `/api/projects/${projectId}/import`, {
+      archive: archive({
+        "h1.txt": big,
+        "h2.txt": big,
+        "h3.txt": big,
+        "h4.txt": big,
+        "h5.txt": big,
+      }),
+    });
+    expect(heavy.statusCode).toBe(409);
+    expect(heavy.json().error).toContain("450 KB");
+    expect(await count()).toBe(before);
   });
   it("keeps releases private to the owner and bounded", async () => {
     expect(

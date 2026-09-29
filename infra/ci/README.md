@@ -1,29 +1,24 @@
-# CI pendiente de activación
+# Integración continua
 
-Estas definiciones se conservan en `templates/` como **archivos no activos**:
+Las definiciones activas viven en `.github/workflows/`:
 
-- `ci.yml`: formato, TypeScript, tests, compilación, gateway, auditorías de dependencias, navegador con DB aislada y construcción de las dos imágenes OCI.
-- `postgres.yml`: suites de API, seguridad de cuenta, capacidad y rotación de clave sobre un servicio PostgreSQL 17.6.
+- `ci.yml`: formato, TypeScript, pruebas, compilación, gateway, auditorías de dependencias, navegador con base aislada (`npm run test:e2e` arranca su propio servidor sobre una PGlite desechable) y construcción de las dos imágenes OCI sin publicarlas.
+- En `ci.yml`, el job `build-workspace-image` además **arranca la imagen del entorno** con la misma postura que el Pod (uid 1000, raíz de solo lectura, sin capacidades, home vacío) y ejecuta `runtime/smoke.mjs`: salud de code-server y DeepSeek Harness, canje de ticket de un solo uso, rechazo de reutilización y de otro origen, aislamiento de cookie entre IDE y agente, y app no publicada. No incluye gVisor ni Kubernetes.
+- `postgres.yml`: suites de API, seguridad de cuenta, capacidad, rotación de clave y portabilidad (importación, versiones, restauración) sobre un servicio PostgreSQL 17.6.
 
-## Por qué no están en `.github/workflows/`
+- `kubernetes.yml`: clúster kind desechable con gVisor en el nodo (`infra/ci/kind/up.sh`), registro local para referenciar ambas imágenes por digest, PostgreSQL desechable y `infra/k8s` aplicado; `tests/k8s/e2e.mjs` recorre un proyecto por la API pública (arranque, kernel gVisor, admisión, NetworkPolicy, IDE/agente con tickets, parada). Sin Ingress, TLS ni DNS reales. No tiene plantilla en `templates/`.
 
-GitHub rechazó la subida con la conexión de Arena porque la GitHub App no tiene permiso `workflows`. La conexión sí permite publicar el código. Guardar las definiciones como plantillas permite revisarlas sin activar automatizaciones ni ampliar permisos.
+`templates/` conserva copias idénticas de la primera activación. **La fuente de verdad es `.github/workflows/`**; cuando la CI haya corrido en verde en GitHub, retirar `templates/` para evitar divergencias.
 
-**No hay CI activa suministrada por este cambio y no se declara ningún resultado de GitHub Actions.** Las comprobaciones locales documentadas en el README no equivalen a la construcción de imágenes o aceptación en tu infraestructura.
+## Qué significa y qué no
 
-## Activación por un mantenedor autorizado
+- Un workflow definido no es un workflow aprobado: el resultado vale cuando aparece en la pestaña Actions del repositorio.
+- Configurar los checks como requeridos en la protección de rama es una decisión del mantenedor.
+- La CI no sustituye las pruebas de Kubernetes, aislamiento, DNS/TLS, proveedor de IA y recuperación descritas en `docs/RELEASE-GATES.md`.
 
-1. Revisar ambas definiciones, sus acciones, permisos, imágenes y consumo de recursos.
-2. Usar una conexión de GitHub autorizada para modificar workflows; si se usa Arena, actualizar/reconectar su integración. No compartir credenciales en el chat ni guardarlas en Git.
-3. Copiar las plantillas a las rutas reconocidas por GitHub, revisar el diff y subir ese cambio con la conexión autorizada:
+## Ciclo local equivalente
 
 ```bash
-mkdir -p .github/workflows
-cp infra/ci/templates/ci.yml .github/workflows/ci.yml
-cp infra/ci/templates/postgres.yml .github/workflows/postgres.yml
+npm ci
+npm run verify   # formato + check + gateway + navegador
 ```
-
-4. Verificar las ejecuciones reales en Actions, investigar fallos y configurar los checks requeridos en las reglas de protección correspondientes. No confundir ausencia de checks con aprobación.
-5. Mantener una única fuente activa: una vez aprobada la activación, retirar o actualizar estas plantillas y esta nota para evitar divergencias.
-
-Esto no sustituye las pruebas de Kubernetes, aislamiento, DNS/TLS, proveedor de IA y recuperación descritas en `docs/RELEASE-GATES.md`.

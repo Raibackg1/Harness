@@ -49,6 +49,7 @@ describe("durable reconciler with an explicitly mocked cluster driver", () => {
       { "index.js": "console.log(1)" },
       {},
       "private-key",
+      undefined, // no project database, so no credential is decrypted or passed
     );
     const {
       rows: [p],

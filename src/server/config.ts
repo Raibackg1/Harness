@@ -18,6 +18,8 @@ const envSchema = z.object({
     .regex(/^[a-z0-9.-]+$/)
     .optional(),
   WORKSPACE_IMAGE: z.string().optional(),
+  // Optional: only needed for projects that enable their own PostgreSQL.
+  DATABASE_IMAGE: z.string().optional(),
   RUNTIME_CLASS: z.string().default("gvisor"),
   STORAGE_CLASS: z.string().optional(),
   INGRESS_CLASS: z.string().default("nginx"),
@@ -51,6 +53,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       throw new Error("Kubernetes requires WORKSPACE_DOMAIN, WORKSPACE_IMAGE and ENCRYPTION_KEY");
     if (!/^[-a-zA-Z0-9_./:]+@sha256:[a-f0-9]{64}$/.test(c.WORKSPACE_IMAGE))
       throw new Error("WORKSPACE_IMAGE must be pinned by digest");
+    if (c.DATABASE_IMAGE && !/^[-a-zA-Z0-9_./:]+@sha256:[a-f0-9]{64}$/.test(c.DATABASE_IMAGE))
+      throw new Error("DATABASE_IMAGE must be pinned by digest");
     if (c.RUNTIME_CLASS !== "gvisor" && c.RUNTIME_CLASS !== "kata")
       throw new Error("Only gvisor or kata runtimes are allowed");
     let controlHost = "";

@@ -16,6 +16,7 @@
     "test:e2e": "playwright test",
     "db:migrate": "tsx src/server/migrate.ts",
     "check": "npm run typecheck && npm test && npm run build",
+    "verify": "npm run format:check && npm run check && npm run test:gateway && npm run test:e2e",
     "worker": "tsx src/server/worker-entry.ts",
     "start:worker": "node build/server/worker-entry.js",
     "test:gateway": "npm ci --prefix runtime && npm test --prefix runtime",

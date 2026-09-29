@@ -12,11 +12,13 @@ Una plataforma autohospedada de desarrollo en el navegador, con un plano de cont
 - Iniciar y cerrar sesión, editar el perfil y cambiar la contraseña revocando las sesiones anteriores.
 - Activar segundo factor TOTP con QR local, diez códigos de recuperación de un solo uso y prevención de reutilización. Consultar y revocar sesiones de la cuenta.
 - Suspender/reactivar miembros con reautenticación del administrador: revoca sesiones e invitaciones y solicita detener/despublicar sus entornos. La detención física necesita al worker.
-- Crear proyectos **privados por propietario** con plantillas ejecutables de React/Vite, Node.js, Python, FastAPI o HTML/CSS. Las plantillas son el punto de partida, no un catálogo de lenguajes: soportar otro lenguaje significa agregar su receta en `src/shared/templates.ts` y su imagen en el Runtime (`sandbox` 1 CPU / 1 GiB y comando de verificación configurables, con límite de 450 KB por proyecto). El entorno no ejecuta un `Dockerfile` arbitrario subido por el usuario.
+- Crear proyectos **privados por titular, compartibles por invitación explícita** con plantillas ejecutables de React/Vite, Node.js, Python, FastAPI o HTML/CSS. Las plantillas son el punto de partida, no un catálogo de lenguajes: soportar otro lenguaje significa agregar su receta en `src/shared/templates.ts` y su imagen en el Runtime (`sandbox` 1 CPU / 1 GiB y comando de verificación configurables, con límite de 450 KB por proyecto). El entorno no ejecuta un `Dockerfile` arbitrario subido por el usuario.
 - Editar y crear archivos iniciales, con control de versiones para impedir sobrescrituras concurrentes; descargar un ZIP real.
 - **Exportar un proyecto para que corra fuera de la plataforma**: `GET /api/projects/:id/bundle` entrega ZIP con el código, un `Dockerfile` y un `docker-compose.yml` generados, `.env.example` con solo los _nombres_ de las variables y un `harness-export.json` que documenta puerto, comando, límites y recursos usados. Nunca incluye valores de secretos ni la base de datos. `POST /api/projects/:id/import` acepta ese mismo tipo de ZIP para entrar sin depender de un forjador.
 - **Versiones de código**: cada publicación deja una instantánea en `project_releases` (se conservan 20), se pueden crear versiones manuales y restaurarlas con verificación de estado —nunca reemplaza código activo en silencio.
 - Buscar, ordenar, archivar, renombrar y eliminar proyectos con confirmación.
+- **Base de datos PostgreSQL por proyecto** (opcional, la activa el titular): corre en el sandbox del proyecto bajo gVisor, el código la encuentra en `DATABASE_URL` y la exportación añade una base vacía al `docker-compose.yml`. Requiere que la instalación configure `DATABASE_IMAGE` fijada por digest.
+- **Compartir proyectos** con otras cuentas de la instalación como editor (cambia código, versiones y abre IDE/agente) o lector. Iniciar, publicar, variables, ajustes y miembros siguen siendo del titular.
 - Guardar variables de entorno cifradas con AES-256-GCM cuando se configura la clave maestra. La API nunca devuelve su valor.
 - Consultar un historial persistente de acciones y el estado real de configuración de la infraestructura.
 - Rotación offline de la clave maestra: validación previa, re-cifrado transaccional y auditoría; rechaza configuraciones con una clave que no corresponde a la DB. Ver el procedimiento antes de usarla.
@@ -92,6 +94,7 @@ La API **no ejecuta comandos de los proyectos**, no monta Docker y no permite UR
 | ---------------------- | ------------------------------------------------------ |
 | `npm run dev`          | API + Vite en un mismo origen, con PGlite o PostgreSQL |
 | `npm run check`        | TypeScript, pruebas de backend y compilación           |
+| `npm run verify`       | Formato + `check` + gateway + navegador: todo el ciclo |
 | `npm run test:gateway` | Pruebas de tickets, sesiones y aislamiento del gateway |
 | `npm run test:e2e`     | Playwright contra un servidor separado; ver abajo      |
 | `npm run build`        | Compila frontend y backend                             |
@@ -101,15 +104,12 @@ La API **no ejecuta comandos de los proyectos**, no monta Docker y no permite UR
 | `npm run start:worker` | Worker compilado para producción                       |
 | `npm run format:check` | Revisa el formato del código y documentación           |
 
-Para pruebas de navegador, usa una **base separada**, no la de usuarios:
+Las pruebas de navegador usan una **base separada**, nunca la de usuarios. Sin `E2E_BASE_URL`, `npm run test:e2e` arranca su propio servidor en `127.0.0.1:3100` (cambiable con `E2E_PORT`) sobre una PGlite desechable en `.cache/e2e-auto`, que se borra en cada ejecución, con una `ENCRYPTION_KEY` aleatoria:
 
 ```bash
-# Terminal 1: .cache está ignorado por Git. No reutilizar una DB con datos reales.
-PORT=3100 APP_ORIGIN=http://127.0.0.1:3100 DATA_DIR=.cache/e2e-postgres \
-  ENCRYPTION_KEY=$(openssl rand -hex 32) npm run dev
-
-# Terminal 2
-npx playwright install chromium
+npx playwright install chromium   # o CHROMIUM_EXECUTABLE=/ruta/a/chrome si ya está instalado
+npm run test:e2e
+# Contra un servidor ya levantado (con su propia base desechable):
 E2E_BASE_URL=http://127.0.0.1:3100 npm run test:e2e
 ```
 
@@ -127,15 +127,17 @@ Crear esas cuatro bases vacías por separado antes de ejecutar. No utilizar base
 ## Verificaciones realizadas en este entorno
 
 - Compilación y chequeo TypeScript: correctos.
-- **100 pruebas** de API, MFA/recuperación, sesiones, suspensión, cuotas/vencimiento, migraciones hasta v3, recuperación administrativa, rotación de claves y concurrencia, criptografía, persistencia tras reapertura, manifiestos y reconciliación: correctas. Las pruebas del reconciliador usan un **doble de Kubernetes**, no un clúster real.
-- **12 pruebas** del gateway: correctas, incluyendo ocho con servidores HTTP/WebSocket reales en loopback, canje de tickets, filtrado de cookies, rechazo de orígenes y cierre al expirar la sesión.
-- **4 pruebas de navegador**: alta de TOTP, inicio con segundo factor, códigos de respaldo y revocación de otras sesiones; flujo de cuenta/proyecto/edición/persistencia/ZIP/variables/invitaciones/archivo/eliminación; navegación móvil; ausencia de infracciones graves/críticas de WCAG A/AA detectadas por axe en el inicio público.
+- **130 pruebas** de API, compartir proyectos con pruebas negativas de autorización, MFA/recuperación, sesiones, suspensión, cuotas/vencimiento, migraciones hasta v3, recuperación administrativa, rotación de claves y concurrencia, criptografía, persistencia tras reapertura, manifiestos y reconciliación: correctas. Las pruebas del reconciliador usan un **doble de Kubernetes**, no un clúster real.
+- **13 pruebas** del gateway: correctas, incluido el traspaso del token de `dsh web` al abrir el agente, incluyendo ocho con servidores HTTP/WebSocket reales en loopback, canje de tickets, filtrado de cookies, rechazo de orígenes y cierre al expirar la sesión.
+- **6 pruebas de navegador**: proyecto compartido editado desde otra sesión; instantánea, restauración visible en el editor, paquete Docker sin valores de secretos e importación de ZIP; alta de TOTP, inicio con segundo factor, códigos de respaldo y revocación de otras sesiones; flujo de cuenta/proyecto/edición/persistencia/ZIP/variables/invitaciones/archivo/eliminación; navegación móvil; ausencia de infracciones graves/críticas de WCAG A/AA detectadas por axe en el inicio público.
 - **60 de esas pruebas** (API, seguridad de cuenta, capacidad y rotación de claves) también ejecutadas correctamente sobre **PostgreSQL 17.6 externo a Node**, en proceso local separado por TCP. No es evidencia de un PostgreSQL gestionado en producción.
+- En esta revisión: **70 pruebas** (las anteriores más portabilidad: importación, versiones, restauración y límites) ejecutadas sobre **PostgreSQL 16 local**, y el workflow `postgres.yml` las corre sobre 17.6 en GitHub Actions.
 - Paquete real `@deepseek-ai/dsh@0.1.7-rc.2`: `web --help` y `--dump-config` con el parche de privacidad comprobados.
 - `npm audit --omit=dev`: sin vulnerabilidades conocidas reportadas al ejecutar la comprobación. No es una auditoría de seguridad de la aplicación.
-- **No comprobados aquí:** Dockerfiles construidos, ejecución de Kubernetes, CEL/admission en el servidor API, CNI, gVisor/Kata, PVC, DNS, TLS, proveedor de IA, SMTP, carga, backups o restauración en producción.
+- **Kubernetes real (kind + gVisor en GitHub Actions, `kubernetes.yml`)**: `infra/k8s` aplicado tal cual (salvo placeholders), plano de control y worker contra PostgreSQL 17.6 en el clúster; proyecto iniciado por la API, Pod bajo el kernel de gVisor, sin token de clúster, admisión que rechaza un Pod sin gVisor, NetworkPolicy que bloquea otros namespaces, IDE y agente abiertos con tickets de la API y parada. Esta prueba destapó y corrigió tres fallos que impedían arrancar cualquier entorno (política de admisión inválida, cuota de ConfigMaps y token del agente).
+- **No comprobados aquí:** Ingress/TLS/DNS reales, Kata, un clúster multi-nodo, proveedor de IA, SMTP, carga, backups o restauración en producción.
 
-Las definiciones de CI incluyen construcción de imágenes y una suite con PostgreSQL externo. Se conservan como **plantillas no activas** en `infra/ci/templates/`: la conexión actual de GitHub no permite escribir workflows. **Este PR no activa GitHub Actions ni se afirma que haya pasado CI en GitHub.** Un mantenedor autorizado debe revisar y activar las plantillas siguiendo [infra/ci/README.md](infra/ci/README.md).
+La CI está en `.github/workflows/`: `ci.yml` (formato, TypeScript, pruebas, compilación, gateway, auditorías de dependencias, navegador con base aislada y construcción de las dos imágenes OCI) y `postgres.yml` (suites sobre PostgreSQL 17.6). Se activan con la rama que las introduce; **un resultado verde solo cuenta cuando aparece en GitHub Actions**, no por estar definida. Ver [infra/ci/README.md](infra/ci/README.md).
 
 ## Documentación de instalación y operación
 
@@ -150,6 +152,6 @@ Las definiciones de CI incluyen construcción de imágenes y una suite con Postg
 
 ## Alcance que no debe confundirse con una entrega comercial completa
 
-No se implementan facturación, pagos, suscripciones, marketplace, colaboración simultánea en vivo (edición concurrente CRDT), roles compartidos por proyecto, SSO/passkeys, verificación y recuperación por correo, bases de datos gestionadas para las apps, un pipeline de despliegue de producción independiente, dominios personalizados de clientes, cuotas por consumo, idle shutdown, moderación antiabuso ni un SLO contratado. No hay botones que finjan estas funciones. El bundle de exportación tampoco incluye `pg_dump` de la base del proyecto: la portabilidad hoy cubre código, entorno y nombres de variables.
+No se implementan facturación, pagos, suscripciones, marketplace, colaboración simultánea en vivo (edición concurrente CRDT), SSO/passkeys, verificación y recuperación por correo, backups por proyecto de esas bases, un pipeline de despliegue de producción independiente, dominios personalizados de clientes, cuotas por consumo, idle shutdown, moderación antiabuso ni un SLO contratado. No hay botones que finjan estas funciones. El bundle de exportación no incluye un `pg_dump` de la base del proyecto (trae una base vacía): la portabilidad hoy cubre código, entorno y nombres de variables.
 
 El registro público está cerrado deliberadamente. Permitir clientes no confiables exige completar [RELEASE-GATES.md](docs/RELEASE-GATES.md), la operación y las funciones comerciales que decidas ofrecer. No se puede afirmar honestamente que un sistema sea apto para venta solo porque el código compile o tenga un panel terminado.

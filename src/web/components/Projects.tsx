@@ -28,6 +28,7 @@ import {
   Square,
   Terminal,
   Trash2,
+  Users,
 } from "lucide-react";
 import React, { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { templates } from "../../shared/templates";
@@ -138,8 +139,8 @@ export function ProjectList({
               <div className="project-card-top">
                 <TemplateIcon type={p.template} />
                 <span className="private-label">
-                  <Lock size={11} />
-                  Privado
+                  {p.role === "owner" ? <Lock size={11} /> : <Users size={11} />}
+                  {roleLabel[p.role]}
                 </span>
                 <ArrowUpRight size={17} className="project-arrow" />
               </div>
@@ -239,7 +240,8 @@ export function ProjectView({
 }) {
   const [tab, setTab] = useState("files"),
     [busy, setBusy] = useState(""),
-    [deleting, setDeleting] = useState(false);
+    [deleting, setDeleting] = useState(false),
+    [filesRevision, setFilesRevision] = useState(0);
   useEffect(() => {
     setTab("files");
   }, [projectId]);
@@ -318,23 +320,46 @@ export function ProjectView({
         </div>
         <div className="detail-actions">
           <Status status={p.status} />
-          <Button
-            variant="secondary"
-            busy={busy === "stop"}
-            disabled={!!busy || p.desired !== "running"}
-            onClick={() => action("stop")}
-          >
-            <Square size={14} />
-            Detener
-          </Button>
-          <Button
-            busy={busy === "start" || busy === "ide"}
-            disabled={!!busy || p.archived || p.desired === "deleted"}
-            onClick={() => (p.status === "running" ? launch("ide") : action("start"))}
-          >
-            {p.status === "running" ? <ExternalLink size={15} /> : <Play size={15} />}{" "}
-            {p.status === "running" ? "Abrir IDE" : "Iniciar entorno"}
-          </Button>
+          {p.role !== "owner" && (
+            <span className="private-label">
+              <Users size={11} />
+              {roleLabel[p.role]}
+            </span>
+          )}
+          {p.role === "owner" ? (
+            <>
+              <Button
+                variant="secondary"
+                busy={busy === "stop"}
+                disabled={!!busy || p.desired !== "running"}
+                onClick={() => action("stop")}
+              >
+                <Square size={14} />
+                Detener
+              </Button>
+              <Button
+                busy={busy === "start" || busy === "ide"}
+                disabled={!!busy || p.archived || p.desired === "deleted"}
+                onClick={() => (p.status === "running" ? launch("ide") : action("start"))}
+              >
+                {p.status === "running" ? <ExternalLink size={15} /> : <Play size={15} />}{" "}
+                {p.status === "running" ? "Abrir IDE" : "Iniciar entorno"}
+              </Button>
+            </>
+          ) : p.role === "editor" ? (
+            <Button
+              busy={busy === "ide"}
+              disabled={!!busy || p.status !== "running"}
+              title={
+                p.status === "running"
+                  ? undefined
+                  : "Solo la persona propietaria puede iniciar el entorno."
+              }
+              onClick={() => launch("ide")}
+            >
+              <ExternalLink size={15} /> Abrir IDE
+            </Button>
+          ) : null}
         </div>
       </div>
       {!infra?.kubernetes && (
@@ -361,12 +386,18 @@ export function ProjectView({
         </Notice>
       )}
       <div className="detail-tabs tabs">
-        {[
-          ["files", "Archivos iniciales", FileCode2],
-          ["runtime", "Entorno y agente", Terminal],
-          ["secrets", "Variables", KeyRound],
-          ["settings", "Ajustes", Settings],
-        ].map(([id, label, Icon]) => (
+        {(
+          [
+            ["files", "Archivos iniciales", FileCode2],
+            ["runtime", "Entorno y agente", Terminal],
+            ...(p.role === "owner"
+              ? [
+                  ["secrets", "Variables", KeyRound],
+                  ["settings", "Ajustes", Settings],
+                ]
+              : []),
+          ] as const
+        ).map(([id, label, Icon]) => (
           <button
             key={String(id)}
             className={tab === id ? "active" : ""}
@@ -381,8 +412,12 @@ export function ProjectView({
       </div>
       {tab === "files" ? (
         <>
-          <FileEditor project={p} notify={notify} />
-          <ReleasesPanel project={p} notify={notify} />
+          <FileEditor key={filesRevision} project={p} notify={notify} />
+          <ReleasesPanel
+            project={p}
+            notify={notify}
+            onRestored={() => setFilesRevision((n) => n + 1)}
+          />
         </>
       ) : tab === "runtime" ? (
         <>
@@ -412,7 +447,10 @@ export function ProjectView({
                 viven en el volumen del clúster.
               </Notice>
               <div className="panel-actions">
-                <Button disabled={p.status !== "running" || !!busy} onClick={() => launch("ide")}>
+                <Button
+                  disabled={p.status !== "running" || !!busy || p.role === "viewer"}
+                  onClick={() => launch("ide")}
+                >
                   <ExternalLink size={15} />
                   Abrir code-server
                 </Button>
@@ -451,7 +489,7 @@ export function ProjectView({
                 automáticamente ni respuestas simuladas.
               </Notice>
               <Button
-                disabled={p.status !== "running" || !!busy}
+                disabled={p.status !== "running" || !!busy || p.role === "viewer"}
                 busy={busy === "agent"}
                 onClick={() => launch("agent")}
               >
@@ -461,49 +499,55 @@ export function ProjectView({
               </Button>
             </section>
           </div>
-          <section className="panel publish-panel">
-            <div>
-              <Globe size={22} />
-              <h2>Comparte lo que estás construyendo.</h2>
-              <p>
-                Publica el servidor de desarrollo en el puerto 3000. La URL deja de funcionar al
-                detener el entorno; no es un despliegue de producción independiente.
-              </p>
-              <code>{templates[p.template].command}</code>
-              {p.published && infra?.workspaceDomain && (
-                <a
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="published-url"
-                  href={`https://app-${p.id}.${infra.workspaceDomain}`}
-                >
-                  https://app-{p.id}.{infra.workspaceDomain}
-                  <ExternalLink size={13} />
-                </a>
-              )}
-            </div>
-            <Button
-              variant="secondary"
-              disabled={p.status !== "running" || !!busy}
-              busy={busy === "publish" || busy === "unpublish"}
-              onClick={() => action(p.published ? "unpublish" : "publish")}
-            >
-              <Globe size={15} />
-              {p.published ? "Retirar URL pública" : "Habilitar URL pública"}
-            </Button>
-          </section>
+          {p.role === "owner" && (
+            <section className="panel publish-panel">
+              <div>
+                <Globe size={22} />
+                <h2>Comparte lo que estás construyendo.</h2>
+                <p>
+                  Publica el servidor de desarrollo en el puerto 3000. La URL deja de funcionar al
+                  detener el entorno; no es un despliegue de producción independiente.
+                </p>
+                <code>{templates[p.template].command}</code>
+                {p.published && infra?.workspaceDomain && (
+                  <a
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="published-url"
+                    href={`https://app-${p.id}.${infra.workspaceDomain}`}
+                  >
+                    https://app-{p.id}.{infra.workspaceDomain}
+                    <ExternalLink size={13} />
+                  </a>
+                )}
+              </div>
+              <Button
+                variant="secondary"
+                disabled={p.status !== "running" || !!busy}
+                busy={busy === "publish" || busy === "unpublish"}
+                onClick={() => action(p.published ? "unpublish" : "publish")}
+              >
+                <Globe size={15} />
+                {p.published ? "Retirar URL pública" : "Habilitar URL pública"}
+              </Button>
+            </section>
+          )}
           <RuntimeEvents projectId={p.id} notify={notify} />
         </>
-      ) : tab === "secrets" ? (
+      ) : tab === "secrets" && p.role === "owner" ? (
         <SecretsView project={p} infra={infra} notify={notify} />
-      ) : (
-        <ProjectSettings
-          project={p}
-          refresh={refresh}
-          notify={notify}
-          onDelete={() => setDeleting(true)}
-        />
-      )}
+      ) : tab === "settings" && p.role === "owner" ? (
+        <>
+          <ProjectSettings
+            project={p}
+            refresh={refresh}
+            notify={notify}
+            onDelete={() => setDeleting(true)}
+          />
+          <ProjectDatabase project={p} refresh={refresh} notify={notify} />
+          <ProjectMembers project={p} notify={notify} />
+        </>
+      ) : null}
       {deleting && (
         <DeleteModal
           project={p}
@@ -524,11 +568,19 @@ interface SourceFile {
   content: string;
   version: number;
 }
-function ReleasesPanel({ project, notify }: { project: Project; notify: Notify }) {
+function ReleasesPanel({
+  project,
+  notify,
+  onRestored,
+}: {
+  project: Project;
+  notify: Notify;
+  onRestored: () => void;
+}) {
   const [rows, setRows] = useState<any[] | null>(null),
     [note, setNote] = useState(""),
     [busy, setBusy] = useState("");
-  const locked = project.provisioned || project.desired !== "stopped";
+  const locked = project.provisioned || project.desired !== "stopped" || project.role === "viewer";
   const load = useCallback(async () => {
     try {
       setRows(await api(`/projects/${project.id}/releases`));
@@ -545,7 +597,6 @@ function ReleasesPanel({ project, notify }: { project: Project; notify: Notify }
     setBusy("new");
     try {
       await api(`/projects/${project.id}/releases`, send("POST", { note }));
-      e.currentTarget.reset();
       setNote("");
       notify("Instantánea guardada.");
       await load();
@@ -561,6 +612,7 @@ function ReleasesPanel({ project, notify }: { project: Project; notify: Notify }
       api(`/projects/${project.id}/releases/${row.id}/rollback`, send("POST", { force }));
     try {
       await call(false);
+      onRestored();
       notify("Versión restaurada en el código inicial.");
     } catch (e) {
       const message = (e as Error).message;
@@ -571,6 +623,7 @@ function ReleasesPanel({ project, notify }: { project: Project; notify: Notify }
       }
       try {
         await call(true);
+        onRestored();
         notify("Versión restaurada en el código inicial.");
       } catch (second) {
         notify((second as Error).message, true);
@@ -661,7 +714,7 @@ function FileEditor({ project, notify }: { project: Project; notify: Notify }) {
   const archiveInput = useRef<HTMLInputElement | null>(null);
   const active = files?.find((f) => f.path === current);
   const dirty = !!active && active.content !== content;
-  const locked = project.provisioned || project.desired !== "stopped";
+  const locked = project.provisioned || project.desired !== "stopped" || project.role === "viewer";
   const load = useCallback(async () => {
     try {
       const f = await api<SourceFile[]>(`/projects/${project.id}/files`);
@@ -1123,6 +1176,178 @@ function SecretsView({
         <p>Los cambios se aplican al iniciar o reiniciar el entorno.</p>
       </aside>
     </div>
+  );
+}
+function ProjectDatabase({
+  project,
+  refresh,
+  notify,
+}: {
+  project: Project;
+  refresh: () => Promise<void>;
+  notify: Notify;
+}) {
+  const [busy, setBusy] = useState(false);
+  async function toggle() {
+    const enabling = !project.database;
+    if (
+      !enabling &&
+      !confirm(
+        "¿Desactivar la base de datos? El servidor se detiene y DATABASE_URL deja de existir en el entorno. Los datos se conservan hasta que elimines el proyecto.",
+      )
+    )
+      return;
+    setBusy(true);
+    try {
+      await api(`/projects/${project.id}/database`, send("PUT", { enabled: enabling }));
+      await refresh();
+      notify(enabling ? "Base de datos activada." : "Base de datos desactivada.");
+    } catch (e) {
+      notify((e as Error).message, true);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <section className="panel" aria-label="Base de datos PostgreSQL">
+      <div className="panel-head">
+        <div>
+          <h2>Base de datos PostgreSQL</h2>
+          <p>
+            Un PostgreSQL 17 propio del proyecto, en el mismo sandbox aislado que el entorno y con
+            su volumen de 2 GiB. Tu código lo encuentra en la variable <code>DATABASE_URL</code>.
+            Solo el entorno de este proyecto puede conectarse. La exportación incluye una base vacía
+            en <code>docker-compose.yml</code>, no los datos.
+          </p>
+        </div>
+      </div>
+      <Notice>
+        {project.database
+          ? "Activa. Si el entorno está en ejecución, el worker lo recrea con DATABASE_URL: guarda tu trabajo."
+          : "Desactivada. Al activarla con el entorno en ejecución, este se recrea para recibir DATABASE_URL."}
+      </Notice>
+      <div className="panel-actions">
+        <Button variant="secondary" busy={busy} onClick={() => void toggle()}>
+          {project.database ? "Desactivar base de datos" : "Activar base de datos"}
+        </Button>
+      </div>
+    </section>
+  );
+}
+const roleLabel: Record<Project["role"], string> = {
+  owner: "Privado",
+  editor: "Compartido · Editor",
+  viewer: "Compartido · Lector",
+};
+interface Member {
+  id: string;
+  name: string;
+  email: string;
+  role: Project["role"];
+}
+function ProjectMembers({ project, notify }: { project: Project; notify: Notify }) {
+  const [rows, setRows] = useState<Member[] | null>(null),
+    [email, setEmail] = useState(""),
+    [role, setRole] = useState<"editor" | "viewer">("editor"),
+    [busy, setBusy] = useState("");
+  const load = useCallback(async () => {
+    try {
+      setRows(await api<Member[]>(`/projects/${project.id}/members`));
+    } catch (e) {
+      notify((e as Error).message, true);
+      setRows([]);
+    }
+  }, [project.id, notify]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  async function add(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setBusy("add");
+    try {
+      await api(`/projects/${project.id}/members`, send("PUT", { email, role }));
+      setEmail("");
+      notify("Acceso concedido.");
+      await load();
+    } catch (error) {
+      notify((error as Error).message, true);
+    } finally {
+      setBusy("");
+    }
+  }
+  async function remove(member: Member) {
+    if (!confirm(`¿Quitar el acceso de ${member.email} a este proyecto?`)) return;
+    setBusy(member.id);
+    try {
+      await api(`/projects/${project.id}/members/${member.id}`, send("DELETE"));
+      notify("Acceso retirado.");
+      await load();
+    } catch (error) {
+      notify((error as Error).message, true);
+    } finally {
+      setBusy("");
+    }
+  }
+  return (
+    <section className="panel" aria-label="Personas con acceso">
+      <div className="panel-head">
+        <div>
+          <h2>Personas con acceso</h2>
+          <p>
+            Comparte el proyecto con cuentas de esta instalación. Quien edita puede cambiar el
+            código y abrir el IDE y el agente: dentro del entorno ve sus variables. Iniciar,
+            publicar, las variables y los ajustes siguen siendo solo tuyos.
+          </p>
+        </div>
+      </div>
+      <form className="stack-form" onSubmit={add}>
+        <input
+          type="email"
+          required
+          value={email}
+          placeholder="correo@empresa.com"
+          aria-label="Correo de la persona"
+          onChange={(e) => setEmail(e.target.value)}
+        />
+        <select
+          value={role}
+          aria-label="Rol en el proyecto"
+          onChange={(e) => setRole(e.target.value as "editor" | "viewer")}
+        >
+          <option value="editor">Editor</option>
+          <option value="viewer">Lector</option>
+        </select>
+        <Button type="submit" variant="secondary" busy={busy === "add"}>
+          <Users size={15} />
+          Compartir
+        </Button>
+      </form>
+      {rows === null ? (
+        <Loading />
+      ) : (
+        <div className="activity-list">
+          {rows.map((m) => (
+            <div key={m.id} className="activity-row">
+              <span className="activity-icon">
+                {m.role === "owner" ? <Lock size={15} /> : <Users size={15} />}
+              </span>
+              <div>
+                <strong>{m.name}</strong>
+                <p>
+                  {m.email} ·{" "}
+                  {m.role === "owner" ? "Titular" : m.role === "editor" ? "Editor" : "Lector"}
+                </p>
+              </div>
+              {m.role !== "owner" && (
+                <Button variant="ghost" busy={busy === m.id} onClick={() => void remove(m)}>
+                  Quitar
+                </Button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 function ProjectSettings({

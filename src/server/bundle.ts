@@ -47,6 +47,8 @@ export type BundleInput = {
   template: string;
   files: Record<string, string>;
   secretNames: string[];
+  /** The project runs its own PostgreSQL in the platform: the bundle adds one too. */
+  database?: boolean;
 };
 export function bundleExtras(
   input: BundleInput,
@@ -86,7 +88,31 @@ services:
     env_file:
       - path: .env
         required: false
-`,
+${
+  input.database
+    ? `    environment:
+      DATABASE_URL: postgresql://app:\${POSTGRES_PASSWORD}@db:5432/app
+    depends_on:
+      db:
+        condition: service_healthy
+  # Base vacía: los datos de la plataforma no se exportan. Usa una contraseña URL-safe.
+  db:
+    image: postgres:17.6
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_DB: app
+      POSTGRES_PASSWORD: \${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD en .env}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "app", "-d", "app"]
+      interval: 3s
+      retries: 20
+volumes:
+  db-data:
+`
+    : ""
+}`,
   );
   add(
     ".env.example",
@@ -94,6 +120,9 @@ services:
       "# Variables declaradas en Harness Cloud. Los valores nunca se exportan.",
       "# Cárgalos en el entorno de ejecución y, si usas compose, copia este archivo a .env.",
       ...input.secretNames.map((n) => `${n}=`),
+      ...(input.database
+        ? ["# Contraseña de la base local de docker compose (URL-safe).", "POSTGRES_PASSWORD="]
+        : []),
       "",
     ].join("\n"),
   );
@@ -110,6 +139,9 @@ services:
         containerPort: port,
         baseImage: r.image,
         secretNames: input.secretNames,
+        database: input.database
+          ? { engine: "postgresql", version: "17", data: "not exported" }
+          : null,
         fileCount: Object.keys(input.files).length,
         generated: Object.keys(files),
         notes:

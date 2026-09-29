@@ -184,3 +184,168 @@ test("TOTP enrollment, recovery codes, MFA login and session revocation in the b
   await expect(page.getByText("No hay un worker saludable registrado")).toBeVisible();
   await expect(page.getByText("Plazas reservadas globalmente")).toBeVisible();
 });
+
+test("snapshot, restore, runnable bundle without secret values and ZIP import in the browser", async ({
+  page,
+}, testInfo) => {
+  const { unzipSync, zipSync, strFromU8, strToU8 } = await import("fflate");
+  const { readFile, writeFile } = await import("node:fs/promises");
+  const browserErrors: string[] = [];
+  page.on("pageerror", (e) => browserErrors.push(e.message));
+  await page.goto("/");
+  await page.getByRole("button", { name: "Entrar", exact: false }).click();
+  await page.getByLabel("Correo electrónico", { exact: true }).fill(email);
+  await page.getByLabel("Contraseña", { exact: true }).fill(password);
+  await page.getByRole("button", { name: "Iniciar sesión", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Hola, Operador." })).toBeVisible();
+  await page.getByRole("button", { name: "Crear un proyecto", exact: false }).click();
+  await page.getByLabel("Nombre del proyecto").fill("Versionado de extremo a extremo");
+  await page.getByRole("dialog").getByRole("button", { name: "HTML & CSS", exact: false }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Crear proyecto", exact: false })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Versionado de extremo a extremo", level: 1 }),
+  ).toBeVisible();
+  const editor = page.getByRole("textbox", { name: "Contenido de index.html" });
+  const saveAs = async (html: string) => {
+    await page.getByRole("button", { name: "index.html", exact: true }).click();
+    await editor.fill(html);
+    await page.getByRole("button", { name: "Guardar cambios", exact: true }).click();
+    await expect(page.getByRole("status")).toContainText("Archivo guardado");
+  };
+  await saveAs("<h1>Versión estable</h1>");
+  await page.getByLabel("Nota de la instantánea").fill("Estable para restaurar");
+  await page.getByRole("button", { name: "Guardar instantánea", exact: false }).click();
+  await expect(page.getByRole("status")).toContainText("Instantánea guardada");
+  await saveAs("<h1>Cambio roto</h1>");
+  page.once("dialog", (dialog) => dialog.accept());
+  await page
+    .locator(".activity-row", { hasText: "Estable para restaurar" })
+    .getByRole("button", { name: "Restaurar", exact: true })
+    .click();
+  await expect(page.getByRole("status")).toContainText("Versión restaurada");
+  // The editor must show the restored code without a manual reload.
+  await page.getByRole("button", { name: "index.html", exact: true }).click();
+  await expect(editor).toHaveValue("<h1>Versión estable</h1>");
+  await page.getByRole("button", { name: "Variables", exact: true }).click();
+  await page.getByLabel("Nombre", { exact: true }).fill("E2E_PRIVATE_TOKEN");
+  await page.getByLabel("Valor", { exact: true }).fill("valor-que-nunca-sale");
+  await page.getByRole("button", { name: "Guardar variable", exact: false }).click();
+  await expect(page.getByText("E2E_PRIVATE_TOKEN", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Archivos iniciales", exact: true }).click();
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("link", { name: "Paquete ejecutable (Docker)" }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/^harness-.*-bundle\.zip$/);
+  const bundle = Object.fromEntries(
+    Object.entries(unzipSync(new Uint8Array(await readFile((await download.path())!)))).map(
+      ([k, v]) => [k, strFromU8(v)],
+    ),
+  );
+  expect(Object.keys(bundle)).toEqual(
+    expect.arrayContaining([
+      "Dockerfile",
+      "docker-compose.yml",
+      ".env.example",
+      "harness-export.json",
+      "index.html",
+    ]),
+  );
+  expect(bundle["index.html"]).toBe("<h1>Versión estable</h1>");
+  expect(bundle[".env.example"]).toContain("E2E_PRIVATE_TOKEN");
+  expect(Object.values(bundle).some((c) => c.includes("valor-que-nunca-sale"))).toBe(false);
+  const upload = testInfo.outputPath("import.zip");
+  await writeFile(upload, zipSync({ "importado.html": strToU8("<p>desde ZIP</p>") }));
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await page.locator('input[type="file"]').setInputFiles(upload);
+  await expect(page.getByRole("status")).toContainText("Importados 1 archivos");
+  await page.getByRole("button", { name: "importado.html", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Contenido de importado.html" })).toHaveValue(
+    "<p>desde ZIP</p>",
+  );
+  await page.getByRole("button", { name: "index.html", exact: true }).click();
+  await expect(editor).toHaveValue("<h1>Versión estable</h1>");
+  expect(browserErrors).toEqual([]);
+});
+
+test("an owner shares a project and the editor changes its code from another session", async ({
+  page,
+  browser,
+}) => {
+  const browserErrors: string[] = [];
+  page.on("pageerror", (e) => browserErrors.push(e.message));
+  const editorEmail = "editor-browser@example.com",
+    editorPassword = "editor-browser-password-2026";
+  await page.goto("/");
+  await page.getByRole("button", { name: "Entrar", exact: false }).click();
+  await page.getByLabel("Correo electrónico", { exact: true }).fill(email);
+  await page.getByLabel("Contraseña", { exact: true }).fill(password);
+  await page.getByRole("button", { name: "Iniciar sesión", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Hola, Operador." })).toBeVisible();
+  // The collaborator needs an account in this installation: invitation, then registration.
+  const origin = new URL(page.url()).origin;
+  const invitation = await page.evaluate(async (address) => {
+    const r = await fetch("/api/team/invitations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: address }),
+    });
+    return (await r.json()).invitation as string;
+  }, editorEmail);
+  const editorContext = await browser.newContext();
+  const registered = await editorContext.request.post("/api/auth/register", {
+    headers: { origin },
+    data: { name: "Colaboradora", email: editorEmail, password: editorPassword, invitation },
+  });
+  expect(registered.status()).toBe(201);
+  await page.getByRole("button", { name: "Crear un proyecto", exact: false }).click();
+  await page.getByLabel("Nombre del proyecto").fill("Proyecto compartido");
+  await page.getByRole("dialog").getByRole("button", { name: "HTML & CSS", exact: false }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Crear proyecto", exact: false })
+    .click();
+  await expect(page.getByRole("heading", { name: "Proyecto compartido", level: 1 })).toBeVisible();
+  const projectUrl = page.url();
+  await page.getByRole("button", { name: "Ajustes", exact: true }).click();
+  const access = page.getByRole("region", { name: "Personas con acceso" });
+  await access.getByLabel("Correo de la persona").fill(editorEmail);
+  await access.getByLabel("Rol en el proyecto").selectOption("editor");
+  await access.getByRole("button", { name: "Compartir", exact: false }).click();
+  await expect(page.getByRole("status")).toContainText("Acceso concedido");
+  await expect(access.getByText(`${editorEmail} · Editor`)).toBeVisible();
+
+  const editor = await editorContext.newPage();
+  editor.on("pageerror", (e) => browserErrors.push(e.message));
+  // Registration already opened a session in this context.
+  await editor.goto("/");
+  await expect(editor.getByRole("heading", { name: "Hola, Colaboradora." })).toBeVisible();
+  await editor.goto(projectUrl);
+  await expect(
+    editor.getByRole("heading", { name: "Proyecto compartido", level: 1 }),
+  ).toBeVisible();
+  await expect(editor.getByText("Compartido · Editor").first()).toBeVisible();
+  // Owner-only controls are not offered to an editor.
+  await expect(editor.getByRole("button", { name: "Ajustes", exact: true })).toHaveCount(0);
+  await expect(editor.getByRole("button", { name: "Variables", exact: true })).toHaveCount(0);
+  await expect(editor.getByRole("button", { name: "Iniciar entorno", exact: false })).toHaveCount(
+    0,
+  );
+  await editor.getByRole("button", { name: "index.html", exact: true }).click();
+  await editor
+    .getByRole("textbox", { name: "Contenido de index.html" })
+    .fill("<h1>Editado por la colaboradora</h1>");
+  await editor.getByRole("button", { name: "Guardar cambios", exact: true }).click();
+  await expect(editor.getByRole("status")).toContainText("Archivo guardado");
+
+  await page.reload();
+  await page.getByRole("button", { name: "Archivos iniciales", exact: true }).click();
+  await page.getByRole("button", { name: "index.html", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Contenido de index.html" })).toHaveValue(
+    "<h1>Editado por la colaboradora</h1>",
+  );
+  await editorContext.close();
+  expect(browserErrors).toEqual([]);
+});

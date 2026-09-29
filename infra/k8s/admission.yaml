@@ -39,7 +39,8 @@ spec:
       - apiGroups: ["", "apps", "networking.k8s.io"]
         apiVersions: ["v1"]
         operations: ["CREATE", "UPDATE", "DELETE"]
-        resources: ["*", "*/*"]
+        # "*/*" = every resource and subresource; Kubernetes rejects "*" listed alongside it.
+        resources: ["*/*"]
         scope: Namespaced
   matchConditions:
     - name: worker-only

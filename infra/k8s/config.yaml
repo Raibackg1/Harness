@@ -10,6 +10,8 @@ data:
   # MUST be a different registrable domain from the control plane.
   WORKSPACE_DOMAIN: workspaces.example.net
   WORKSPACE_IMAGE: ghcr.io/YOUR-ORG/harness-workspace@sha256:REPLACE_WITH_VERIFIED_IMAGE_DIGEST
+  # Optional: enables "Base de datos PostgreSQL" per project. Pin by digest, e.g.
+  # DATABASE_IMAGE: docker.io/library/postgres@sha256:<digest of 17.x>
   RUNTIME_CLASS: gvisor
   STORAGE_CLASS: REPLACE_WITH_CSI_CLASS
   INGRESS_CLASS: nginx

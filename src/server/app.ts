@@ -22,7 +22,7 @@ import { templates, type TemplateId } from "../shared/templates.js";
 import { HttpError, audit, type User, type Account } from "./contracts.js";
 import { consumeFactor } from "./mfa.js";
 import { bundleExtras, readArchive } from "./bundle.js";
-import { listReleases, restoreRelease, snapshotRelease } from "./releases.js";
+import { listReleases, restoreRelease, snapshotRelease, writeProjectFiles } from "./releases.js";
 import { registerSecurityRoutes } from "./security-routes.js";
 import { changeRuntime, capacityReport } from "./runtime-policy.js";
 import {
@@ -41,10 +41,11 @@ const password = z.string().min(12, "Usa al menos 12 caracteres.").max(128);
 const uuid = z.string().uuid();
 const id = (r: FastifyRequest) => uuid.parse((r.params as any).id);
 const userFields = "id,name,email,role,mfa_enabled";
+const accessRank = { viewer: 0, view: 0, editor: 1, edit: 1, owner: 2, own: 2 } as const;
 // One source of truth for templates: a new entry in shared/templates.ts is accepted
 // by the API, seeded and downloadable without touching this file.
 const templateIds = Object.keys(templates) as [TemplateId, ...TemplateId[]];
-const publicProject = `id,name,description,template,desired,status,error,archived,provisioned,published,revision,created_at,updated_at,runtime_expires_at`;
+const publicProject = `id,name,description,template,desired,status,error,archived,provisioned,published,database,revision,created_at,updated_at,runtime_expires_at`;
 export async function createApp(config: Config, db: Database, logging = true) {
   await initializeEncryptionKey(db, config.ENCRYPTION_KEY);
   db = withEncryptionFence(db, config.ENCRYPTION_KEY);
@@ -135,15 +136,30 @@ export async function createApp(config: Config, db: Database, logging = true) {
     if (req.user!.role !== "owner")
       throw new HttpError(403, "Solo el administrador puede realizar esta acción.");
   };
-  const project = async (req: FastifyRequest, tx: Sql = db, lock = false) => {
+  // Access defaults to "own": a route opens to editors or viewers only by saying so.
+  // No access at all is a 404, so a project's existence is not revealed. Shared access
+  // is frozen while the owner's account is suspended.
+  const project = async (
+    req: FastifyRequest,
+    tx: Sql = db,
+    lock = false,
+    need: "view" | "edit" | "own" = "own",
+  ) => {
     await auth(req);
     const {
       rows: [p],
     } = await tx.query(
-      `SELECT * FROM projects WHERE id=$1 AND owner_id=$2 ${lock ? "FOR UPDATE" : ""}`,
+      `SELECT p.*, CASE WHEN p.owner_id=$2 THEN 'owner' ELSE m.role END AS role FROM projects p LEFT JOIN project_members m ON m.project_id=p.id AND m.user_id=$2 WHERE p.id=$1 AND (p.owner_id=$2 OR (m.user_id IS NOT NULL AND EXISTS (SELECT 1 FROM users o WHERE o.id=p.owner_id AND o.suspended_at IS NULL))) ${lock ? "FOR UPDATE OF p" : ""}`,
       [id(req), req.user!.id],
     );
     if (!p) throw new HttpError(404, "Proyecto no encontrado.");
+    if (accessRank[p.role as keyof typeof accessRank] < accessRank[need])
+      throw new HttpError(
+        403,
+        need === "own"
+          ? "Solo la persona propietaria del proyecto puede hacer esto."
+          : "Tu acceso a este proyecto es de solo lectura.",
+      );
     return p;
   };
   const session = async (user: User, reply: FastifyReply, req: FastifyRequest, tx?: Sql) => {
@@ -338,7 +354,12 @@ export async function createApp(config: Config, db: Database, logging = true) {
     async (req) =>
       (
         await db.query(
-          `SELECT ${publicProject} FROM projects WHERE owner_id=$1 ORDER BY updated_at DESC`,
+          `SELECT ${publicProject
+            .split(",")
+            .map((c) => "p." + c)
+            .join(
+              ",",
+            )}, CASE WHEN p.owner_id=$1 THEN 'owner' ELSE m.role END AS role FROM projects p LEFT JOIN project_members m ON m.project_id=p.id AND m.user_id=$1 WHERE (p.owner_id=$1 OR (m.user_id IS NOT NULL AND EXISTS (SELECT 1 FROM users o WHERE o.id=p.owner_id AND o.suspended_at IS NULL))) ORDER BY p.updated_at DESC`,
           [req.user!.id],
         )
       ).rows,
@@ -388,11 +409,12 @@ export async function createApp(config: Config, db: Database, logging = true) {
       return p;
     });
     reply.code(201);
-    return p;
+    return { ...p, role: "owner" };
   });
   app.get("/api/projects/:id", { preHandler: auth }, async (req) => {
-    const p = await project(req);
+    const p = await project(req, db, false, "view");
     delete p.runtime_key;
+    delete p.database_key;
     delete p.owner_id;
     return p;
   });
@@ -440,10 +462,10 @@ export async function createApp(config: Config, db: Database, logging = true) {
     return { ok: true };
   });
   app.get("/api/projects/:id/files", { preHandler: auth }, async (req) => {
-    await project(req);
+    await project(req, db, false, "view");
     return (
       await db.query(
-        "SELECT path,content,version FROM project_files WHERE project_id=$1 ORDER BY path",
+        'SELECT path,content,version FROM project_files WHERE project_id=$1 ORDER BY path COLLATE "C"',
         [id(req)],
       )
     ).rows;
@@ -457,7 +479,7 @@ export async function createApp(config: Config, db: Database, logging = true) {
       })
       .parse(req.body);
     return db.transaction(async (tx) => {
-      const p = await project(req, tx, true);
+      const p = await project(req, tx, true, "edit");
       if (p.provisioned || p.desired !== "stopped")
         throw new HttpError(
           409,
@@ -494,7 +516,7 @@ export async function createApp(config: Config, db: Database, logging = true) {
     });
   });
   app.get("/api/projects/:id/export", { preHandler: auth }, async (req, reply) => {
-    await project(req);
+    await project(req, db, false, "view");
     const { rows } = await db.query("SELECT path,content FROM project_files WHERE project_id=$1", [
       id(req),
     ]);
@@ -506,18 +528,21 @@ export async function createApp(config: Config, db: Database, logging = true) {
   });
   const fileRows = async (projectId: string) =>
     (
-      await db.query("SELECT path,content FROM project_files WHERE project_id=$1 ORDER BY path", [
-        projectId,
-      ])
+      await db.query(
+        'SELECT path,content FROM project_files WHERE project_id=$1 ORDER BY path COLLATE "C"',
+        [projectId],
+      )
     ).rows as { path: string; content: string }[];
   const secretRowNames = async (projectId: string) =>
     (
-      await db.query("SELECT name FROM secrets WHERE project_id=$1 ORDER BY name", [projectId])
+      await db.query('SELECT name FROM secrets WHERE project_id=$1 ORDER BY name COLLATE "C"', [
+        projectId,
+      ])
     ).rows.map((r: any) => r.name) as string[];
   // A runnable bundle, not just a code dump: the project must start on any Docker host
   // without Harness. Secret values stay behind by design; only their names travel.
   app.get("/api/projects/:id/bundle", { preHandler: auth }, async (req, reply) => {
-    const p = await project(req);
+    const p = await project(req, db, false, "view");
     const rows = await fileRows(p.id);
     const files = Object.fromEntries(rows.map((f) => [f.path, f.content]));
     const extra = bundleExtras({
@@ -525,6 +550,7 @@ export async function createApp(config: Config, db: Database, logging = true) {
       template: p.template,
       files,
       secretNames: await secretRowNames(p.id),
+      database: !!p.database,
     });
     const merged = { ...files, ...extra.files };
     const archive = zipSync(
@@ -546,22 +572,13 @@ export async function createApp(config: Config, db: Database, logging = true) {
     const input = importBody.parse(req.body);
     const read = readArchive(input.archive);
     return db.transaction(async (tx) => {
-      const p = await project(req, tx, true);
+      const p = await project(req, tx, true, "edit");
       if (p.provisioned || p.desired !== "stopped")
         throw new HttpError(
           409,
           "Los archivos activos se editan en el IDE. Esta importación escribe el código inicial.",
         );
-      if (input.mode === "replace")
-        await tx.query("DELETE FROM project_files WHERE project_id=$1", [p.id]);
-      let imported = 0;
-      for (const [path, content] of Object.entries(read.files)) {
-        const r = await tx.query(
-          "INSERT INTO project_files(project_id,path,content) VALUES ($1,$2,$3) ON CONFLICT(project_id,path) DO UPDATE SET content=EXCLUDED.content, version=project_files.version+1 RETURNING version",
-          [p.id, path, content],
-        );
-        if (r.rows.length) imported++;
-      }
+      const imported = await writeProjectFiles(tx, p.id, read.files, input.mode);
       await tx.query("UPDATE projects SET updated_at=now() WHERE id=$1", [p.id]);
       await audit(
         tx,
@@ -574,7 +591,7 @@ export async function createApp(config: Config, db: Database, logging = true) {
     });
   });
   app.get("/api/projects/:id/releases", { preHandler: auth }, async (req) => {
-    await project(req);
+    await project(req, db, false, "view");
     return listReleases(db, id(req));
   });
   app.post("/api/projects/:id/releases", { preHandler: auth }, async (req) => {
@@ -582,7 +599,7 @@ export async function createApp(config: Config, db: Database, logging = true) {
       .object({ note: z.string().trim().max(200).default("") })
       .parse(req.body ?? {});
     return db.transaction(async (tx) => {
-      const p = await project(req, tx, true);
+      const p = await project(req, tx, true, "edit");
       const releaseId = await snapshotRelease(tx, p.id, note || "Instantánea manual");
       await audit(tx, req.user!.id, "release.snapshot", p.id, note);
       return { id: releaseId };
@@ -596,7 +613,7 @@ export async function createApp(config: Config, db: Database, logging = true) {
       .positive()
       .parse((req.params as any).release);
     return db.transaction(async (tx) => {
-      const p = await project(req, tx, true);
+      const p = await project(req, tx, true, "edit");
       if (p.provisioned || p.desired !== "stopped")
         throw new HttpError(
           409,
@@ -614,6 +631,8 @@ export async function createApp(config: Config, db: Database, logging = true) {
     const { action } = z
       .object({ action: z.enum(["start", "stop", "restart", "publish", "unpublish"]) })
       .parse(req.body);
+    // Runtime consumes the owner's quota, so it stays owner-only even for editors.
+    await project(req);
     if (config.KUBERNETES_ENABLED !== "true")
       throw new HttpError(
         503,
@@ -624,7 +643,7 @@ export async function createApp(config: Config, db: Database, logging = true) {
   });
   app.post("/api/projects/:id/launch", { preHandler: auth }, async (req) => {
     const { target } = z.object({ target: z.enum(["ide", "agent"]) }).parse(req.body);
-    const p = await project(req);
+    const p = await project(req, db, false, "edit");
     if (
       config.KUBERNETES_ENABLED !== "true" ||
       p.status !== "running" ||
@@ -646,16 +665,17 @@ export async function createApp(config: Config, db: Database, logging = true) {
     return { url: `https://${host}/_harness/launch`, ticket: jwt };
   });
   app.get("/api/projects/:id/events", { preHandler: auth }, async (req) => {
-    const p = await project(req);
+    const p = await project(req, db, false, "view");
     if (config.KUBERNETES_ENABLED !== "true" || !p.provisioned) return [];
     return k8s.logs(p.id);
   });
   app.get("/api/projects/:id/secrets", { preHandler: auth }, async (req) => {
     await project(req);
     return (
-      await db.query("SELECT name,updated_at FROM secrets WHERE project_id=$1 ORDER BY name", [
-        id(req),
-      ])
+      await db.query(
+        'SELECT name,updated_at FROM secrets WHERE project_id=$1 ORDER BY name COLLATE "C"',
+        [id(req)],
+      )
     ).rows;
   });
   const secretName = z
@@ -721,6 +741,86 @@ export async function createApp(config: Config, db: Database, logging = true) {
       await audit(tx, req.user!.id, "secret.deleted", id(req), name);
     });
     return { ok: true };
+  });
+  app.put("/api/projects/:id/database", { preHandler: auth }, async (req) => {
+    const { enabled } = z.object({ enabled: z.boolean() }).parse(req.body);
+    if (enabled && (!config.DATABASE_IMAGE || !config.ENCRYPTION_KEY))
+      throw new HttpError(
+        503,
+        "La base de datos por proyecto requiere que la instalación configure DATABASE_IMAGE (fijada por digest) y ENCRYPTION_KEY.",
+      );
+    return db.transaction(async (tx) => {
+      const p = await project(req, tx, true);
+      // Generated once and never replaced: Postgres fixes the password when it first
+      // initializes the data volume, and that volume survives disabling the database.
+      const key =
+        p.database_key || (enabled ? encrypt(token(), config.ENCRYPTION_KEY!, `db:${p.id}`) : null);
+      await tx.query(
+        "UPDATE projects SET database=$1,database_key=$2,revision=revision+1,updated_at=now() WHERE id=$3",
+        [enabled, key, p.id],
+      );
+      await audit(
+        tx,
+        req.user!.id,
+        enabled ? "project.database_enabled" : "project.database_disabled",
+        p.id,
+        p.name,
+      );
+      return { database: enabled };
+    });
+  });
+  app.get("/api/projects/:id/members", { preHandler: auth }, async (req) => {
+    const p = await project(req, db, false, "view");
+    return (
+      await db.query(
+        "SELECT u.id,u.name,u.email,'owner' AS role,p.created_at AS added_at FROM projects p JOIN users u ON u.id=p.owner_id WHERE p.id=$1 UNION ALL SELECT u.id,u.name,u.email,m.role,m.created_at FROM project_members m JOIN users u ON u.id=m.user_id WHERE m.project_id=$1 ORDER BY 5",
+        [p.id],
+      )
+    ).rows.map((r: any) => ({ id: r.id, name: r.name, email: r.email, role: r.role }));
+  });
+  app.put("/api/projects/:id/members", { preHandler: auth }, async (req) => {
+    const input = z
+      .object({
+        email,
+        role: z.enum(["viewer", "editor"], { message: "El rol debe ser viewer o editor." }),
+      })
+      .parse(req.body);
+    return db.transaction(async (tx) => {
+      const p = await project(req, tx, true);
+      const {
+        rows: [member],
+      } = await tx.query("SELECT id FROM users WHERE email=$1 AND suspended_at IS NULL", [
+        input.email,
+      ]);
+      if (!member)
+        throw new HttpError(
+          404,
+          "No hay una cuenta activa con ese correo en esta instalación. Invítala primero desde Miembros.",
+        );
+      if (member.id === p.owner_id)
+        throw new HttpError(400, "La persona propietaria ya tiene acceso completo.");
+      await tx.query(
+        "INSERT INTO project_members(project_id,user_id,role,added_by) VALUES ($1,$2,$3,$4) ON CONFLICT (project_id,user_id) DO UPDATE SET role=EXCLUDED.role",
+        [p.id, member.id, input.role, req.user!.id],
+      );
+      await audit(tx, req.user!.id, "project.member_added", p.id, `${input.email} (${input.role})`);
+      return { id: member.id, email: input.email, role: input.role };
+    });
+  });
+  app.delete("/api/projects/:id/members/:user", { preHandler: auth }, async (req) => {
+    const userId = uuid.parse((req.params as any).user);
+    return db.transaction(async (tx) => {
+      const p = await project(req, tx, true);
+      const {
+        rows: [removed],
+      } = await tx.query(
+        "DELETE FROM project_members m USING users u WHERE m.project_id=$1 AND m.user_id=$2 AND u.id=m.user_id RETURNING u.email",
+        [p.id, userId],
+      );
+      if (!removed) throw new HttpError(404, "Esa cuenta no es miembro del proyecto.");
+      await audit(tx, req.user!.id, "project.member_removed", p.id, removed.email);
+      return { ok: true };
+    });
   });
   app.get("/api/activity", { preHandler: auth }, async (req) => {
     const { before } = z
