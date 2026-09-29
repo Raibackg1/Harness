@@ -178,6 +178,20 @@ describe("project members", () => {
       (await as("viewer", "GET", "/api/projects")).json().some((p: any) => p.id === projectId),
     ).toBe(false);
   });
+  it("freezes shared access while the owner's account is suspended", async () => {
+    const base = `/api/projects/${projectId}`;
+    expect(await status("editor", "GET", base)).toBe(200);
+    await db.query("UPDATE users SET suspended_at=now() WHERE email='owner@sharing.test'");
+    try {
+      expect(await status("editor", "GET", base)).toBe(404);
+      expect(
+        (await as("editor", "GET", "/api/projects")).json().some((p: any) => p.id === projectId),
+      ).toBe(false);
+    } finally {
+      await db.query("UPDATE users SET suspended_at=NULL WHERE email='owner@sharing.test'");
+    }
+    expect(await status("editor", "GET", base)).toBe(200);
+  });
   it("records sharing changes in the owner's activity", async () => {
     const actions = (await as("owner", "GET", "/api/activity")).json().map((a: any) => a.action);
     expect(actions).toContain("project.member_added");

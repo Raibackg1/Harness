@@ -137,7 +137,8 @@ export async function createApp(config: Config, db: Database, logging = true) {
       throw new HttpError(403, "Solo el administrador puede realizar esta acción.");
   };
   // Access defaults to "own": a route opens to editors or viewers only by saying so.
-  // No access at all is a 404, so a project's existence is not revealed.
+  // No access at all is a 404, so a project's existence is not revealed. Shared access
+  // is frozen while the owner's account is suspended.
   const project = async (
     req: FastifyRequest,
     tx: Sql = db,
@@ -148,7 +149,7 @@ export async function createApp(config: Config, db: Database, logging = true) {
     const {
       rows: [p],
     } = await tx.query(
-      `SELECT p.*, CASE WHEN p.owner_id=$2 THEN 'owner' ELSE m.role END AS role FROM projects p LEFT JOIN project_members m ON m.project_id=p.id AND m.user_id=$2 WHERE p.id=$1 AND (p.owner_id=$2 OR m.user_id IS NOT NULL) ${lock ? "FOR UPDATE OF p" : ""}`,
+      `SELECT p.*, CASE WHEN p.owner_id=$2 THEN 'owner' ELSE m.role END AS role FROM projects p LEFT JOIN project_members m ON m.project_id=p.id AND m.user_id=$2 WHERE p.id=$1 AND (p.owner_id=$2 OR (m.user_id IS NOT NULL AND EXISTS (SELECT 1 FROM users o WHERE o.id=p.owner_id AND o.suspended_at IS NULL))) ${lock ? "FOR UPDATE OF p" : ""}`,
       [id(req), req.user!.id],
     );
     if (!p) throw new HttpError(404, "Proyecto no encontrado.");
@@ -358,7 +359,7 @@ export async function createApp(config: Config, db: Database, logging = true) {
             .map((c) => "p." + c)
             .join(
               ",",
-            )}, CASE WHEN p.owner_id=$1 THEN 'owner' ELSE m.role END AS role FROM projects p LEFT JOIN project_members m ON m.project_id=p.id AND m.user_id=$1 WHERE p.owner_id=$1 OR m.user_id IS NOT NULL ORDER BY p.updated_at DESC`,
+            )}, CASE WHEN p.owner_id=$1 THEN 'owner' ELSE m.role END AS role FROM projects p LEFT JOIN project_members m ON m.project_id=p.id AND m.user_id=$1 WHERE (p.owner_id=$1 OR (m.user_id IS NOT NULL AND EXISTS (SELECT 1 FROM users o WHERE o.id=p.owner_id AND o.suspended_at IS NULL))) ORDER BY p.updated_at DESC`,
           [req.user!.id],
         )
       ).rows,
