@@ -92,6 +92,7 @@ La API **no ejecuta comandos de los proyectos**, no monta Docker y no permite UR
 | ---------------------- | ------------------------------------------------------ |
 | `npm run dev`          | API + Vite en un mismo origen, con PGlite o PostgreSQL |
 | `npm run check`        | TypeScript, pruebas de backend y compilación           |
+| `npm run verify`       | Formato + `check` + gateway + navegador: todo el ciclo |
 | `npm run test:gateway` | Pruebas de tickets, sesiones y aislamiento del gateway |
 | `npm run test:e2e`     | Playwright contra un servidor separado; ver abajo      |
 | `npm run build`        | Compila frontend y backend                             |
@@ -101,15 +102,12 @@ La API **no ejecuta comandos de los proyectos**, no monta Docker y no permite UR
 | `npm run start:worker` | Worker compilado para producción                       |
 | `npm run format:check` | Revisa el formato del código y documentación           |
 
-Para pruebas de navegador, usa una **base separada**, no la de usuarios:
+Las pruebas de navegador usan una **base separada**, nunca la de usuarios. Sin `E2E_BASE_URL`, `npm run test:e2e` arranca su propio servidor en `127.0.0.1:3100` (cambiable con `E2E_PORT`) sobre una PGlite desechable en `.cache/e2e-auto`, que se borra en cada ejecución, con una `ENCRYPTION_KEY` aleatoria:
 
 ```bash
-# Terminal 1: .cache está ignorado por Git. No reutilizar una DB con datos reales.
-PORT=3100 APP_ORIGIN=http://127.0.0.1:3100 DATA_DIR=.cache/e2e-postgres \
-  ENCRYPTION_KEY=$(openssl rand -hex 32) npm run dev
-
-# Terminal 2
-npx playwright install chromium
+npx playwright install chromium   # o CHROMIUM_EXECUTABLE=/ruta/a/chrome si ya está instalado
+npm run test:e2e
+# Contra un servidor ya levantado (con su propia base desechable):
 E2E_BASE_URL=http://127.0.0.1:3100 npm run test:e2e
 ```
 
@@ -127,9 +125,9 @@ Crear esas cuatro bases vacías por separado antes de ejecutar. No utilizar base
 ## Verificaciones realizadas en este entorno
 
 - Compilación y chequeo TypeScript: correctos.
-- **100 pruebas** de API, MFA/recuperación, sesiones, suspensión, cuotas/vencimiento, migraciones hasta v3, recuperación administrativa, rotación de claves y concurrencia, criptografía, persistencia tras reapertura, manifiestos y reconciliación: correctas. Las pruebas del reconciliador usan un **doble de Kubernetes**, no un clúster real.
+- **122 pruebas** de API, MFA/recuperación, sesiones, suspensión, cuotas/vencimiento, migraciones hasta v3, recuperación administrativa, rotación de claves y concurrencia, criptografía, persistencia tras reapertura, manifiestos y reconciliación: correctas. Las pruebas del reconciliador usan un **doble de Kubernetes**, no un clúster real.
 - **12 pruebas** del gateway: correctas, incluyendo ocho con servidores HTTP/WebSocket reales en loopback, canje de tickets, filtrado de cookies, rechazo de orígenes y cierre al expirar la sesión.
-- **4 pruebas de navegador**: alta de TOTP, inicio con segundo factor, códigos de respaldo y revocación de otras sesiones; flujo de cuenta/proyecto/edición/persistencia/ZIP/variables/invitaciones/archivo/eliminación; navegación móvil; ausencia de infracciones graves/críticas de WCAG A/AA detectadas por axe en el inicio público.
+- **5 pruebas de navegador**: instantánea, restauración visible en el editor, paquete Docker sin valores de secretos e importación de ZIP; alta de TOTP, inicio con segundo factor, códigos de respaldo y revocación de otras sesiones; flujo de cuenta/proyecto/edición/persistencia/ZIP/variables/invitaciones/archivo/eliminación; navegación móvil; ausencia de infracciones graves/críticas de WCAG A/AA detectadas por axe en el inicio público.
 - **60 de esas pruebas** (API, seguridad de cuenta, capacidad y rotación de claves) también ejecutadas correctamente sobre **PostgreSQL 17.6 externo a Node**, en proceso local separado por TCP. No es evidencia de un PostgreSQL gestionado en producción.
 - Paquete real `@deepseek-ai/dsh@0.1.7-rc.2`: `web --help` y `--dump-config` con el parche de privacidad comprobados.
 - `npm audit --omit=dev`: sin vulnerabilidades conocidas reportadas al ejecutar la comprobación. No es una auditoría de seguridad de la aplicación.
