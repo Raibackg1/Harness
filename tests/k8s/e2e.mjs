@@ -187,12 +187,69 @@ if (!denied || !/gVisor or Kata/.test(denied))
   throw new Error(`a Pod without gVisor was not denied by admission: ${denied}`);
 step("admission denies a Pod without gVisor in a project namespace");
 
-// 6. The gateway accepts a ticket issued by the API, once, and serves the IDE and the agent.
+// 6. Reach the workspace the way the Ingress does. kubectl port-forward cannot enter a gVisor
+// sandbox (it has its own network stack), so a relay Pod forwards to the workspace Service.
+// Its NetworkPolicy admits only the ingress namespace: a relay elsewhere must be refused.
+const relayScript =
+  "const net=require('net');net.createServer(c=>{const u=net.connect(8088,process.env.TARGET);" +
+  "u.setTimeout(5000,()=>{u.destroy();c.destroy()});c.pipe(u).pipe(c);" +
+  "u.on('error',()=>c.destroy());c.on('error',()=>u.destroy())}).listen(8088)";
+async function relay(namespace) {
+  await run("kubectl", ["create", "namespace", namespace]).catch(() => null);
+  const manifest = {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: { name: "e2e-relay", namespace },
+    spec: {
+      automountServiceAccountToken: false,
+      containers: [
+        {
+          name: "relay",
+          image: "node:22.22.0-bookworm-slim",
+          command: ["node", "-e", relayScript],
+          env: [{ name: "TARGET", value: `workspace.${ns}.svc.cluster.local` }],
+          ports: [{ containerPort: 8088 }],
+          readinessProbe: { tcpSocket: { port: 8088 }, periodSeconds: 2 },
+        },
+      ],
+    },
+  };
+  const file = join(dir, `relay-${namespace}.json`);
+  await writeFile(file, JSON.stringify(manifest));
+  await kubectl("apply", "-f", file);
+  await kubectl(
+    "-n",
+    namespace,
+    "wait",
+    "--for=condition=Ready",
+    "pod/e2e-relay",
+    "--timeout=180s",
+  );
+}
 const hosts = {
   ide: `ide-${project.id}.${env.WORKSPACE_DOMAIN}`,
   agent: `ai-${project.id}.${env.WORKSPACE_DOMAIN}`,
 };
-const forward = await portForward(ns, `pod/${pod.metadata.name}`, 18088, 8088);
+await relay(env.INGRESS_NAMESPACE || "ingress-nginx");
+await relay("default");
+const outsider = await portForward("default", "pod/e2e-relay", 18089, 8088);
+try {
+  const attempt = await raw(18089, "/livez", { host: hosts.ide }).then(
+    (r) => `reached (HTTP ${r.status})`,
+    () => "blocked",
+  );
+  if (attempt !== "blocked")
+    throw new Error(`a Pod outside the ingress namespace reached the workspace: ${attempt}`);
+  step("NetworkPolicy blocks the workspace from a namespace other than the ingress");
+} finally {
+  outsider.kill();
+}
+const forward = await portForward(
+  env.INGRESS_NAMESPACE || "ingress-nginx",
+  "pod/e2e-relay",
+  18088,
+  8088,
+);
 try {
   for (const target of ["ide", "agent"]) {
     const { ticket } = (await must("POST", `/api/projects/${project.id}/launch`, { target })).json;
