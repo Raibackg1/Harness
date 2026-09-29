@@ -35,13 +35,13 @@ echo "::endgroup::"
 
 echo "::group::gVisor in the node"
 base="https://storage.googleapis.com/gvisor/releases/release/${GVISOR_RELEASE}/$(uname -m)"
-for bin in runsc containerd-shim-runsc-v1; do
-  curl -fsSL "$base/$bin" -o "$work/$bin"
-  curl -fsSL "$base/$bin.sha512" -o "$work/$bin.sha512"
-  (cd "$work" && sha512sum -c "$bin.sha512")
-  chmod 0755 "$work/$bin"
-  docker cp "$work/$bin" "$node:/usr/local/bin/$bin"
-done
+# Releases ship one tarball (runsc, the containerd shim and gvisor-bin/ helpers).
+curl -fsSL "$base/gvisor.tar.bz2" -o "$work/gvisor.tar.bz2"
+curl -fsSL "$base/gvisor.tar.bz2.sha512" -o "$work/gvisor.tar.bz2.sha512"
+(cd "$work" && sha512sum -c gvisor.tar.bz2.sha512)
+mkdir -p "$work/gvisor" && tar -xjf "$work/gvisor.tar.bz2" -C "$work/gvisor"
+docker cp "$work/gvisor/." "$node:/usr/local/bin/"
+docker exec "$node" /usr/local/bin/runsc --version
 # kind's kubelet uses the systemd cgroup driver, so runsc must too.
 printf '[runsc_config]\n  systemd-cgroup = "true"\n' |
   docker exec -i "$node" tee /etc/containerd/runsc.toml >/dev/null
