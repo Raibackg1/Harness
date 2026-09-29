@@ -66,6 +66,8 @@ export async function reconcileOne(db: Database, config: Config, k8s: Kubernetes
     );
   } catch (e) {
     const message = e instanceof Error ? e.message : "Reconciliation failed";
+    const detail = (e as { detail?: string })?.detail;
+    console.error(`reconcile ${p.id}: ${message}${detail ? ` (${detail})` : ""}`);
     await db.query(
       "UPDATE projects SET status='error',error=$1,lease_until=now()+interval '60 seconds' WHERE id=$2 AND lease_id=$3 AND revision=$4",
       [message.slice(0, 500), p.id, leaseId, p.revision],

@@ -71,6 +71,9 @@ describe("Kubernetes workload policy manifests", () => {
     expect(get("PersistentVolumeClaim").spec.resources.requests.storage).toBe("5Gi");
     expect(get("Deployment").spec.strategy.type).toBe("Recreate");
     expect(get("ResourceQuota").spec.hard.pods).toBe("1");
+    // kube-root-ca.crt is published into every namespace and counts against this quota,
+    // next to the seed ConfigMap; a quota of 1 made every workspace start fail with 403.
+    expect(Number(get("ResourceQuota").spec.hard["count/configmaps"])).toBeGreaterThanOrEqual(2);
   });
   it("does not create public app ingress until explicitly enabled", () => {
     expect(get("Ingress").spec.rules).toHaveLength(2);

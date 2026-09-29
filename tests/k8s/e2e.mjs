@@ -124,18 +124,22 @@ await until(
   "the worker to report the workspace running",
   async () => {
     const p = (await must("GET", `/api/projects/${project.id}`)).json;
-    if (p.status === "error") throw new Error(`worker error: ${p.error}`);
-    return p.status === "running" ? p : null;
+    // An error is final for this revision: stop waiting and show why.
+    return p.status === "running" || p.status === "error" ? p : null;
   },
   420000,
   5000,
-).catch(async (e) => {
-  console.error(await kubectl("-n", ns, "get", "all,pvc,events", "-o", "wide").catch(() => ""));
-  console.error(
-    await kubectl("-n", ns, "logs", "deployment/workspace", "--tail=100").catch(() => ""),
-  );
-  throw e;
-});
+)
+  .then((p) => {
+    if (p.status === "error") throw new Error(`worker error: ${p.error}`);
+  })
+  .catch(async (e) => {
+    console.error(await kubectl("-n", ns, "get", "all,pvc,events", "-o", "wide").catch(() => ""));
+    console.error(
+      await kubectl("-n", ns, "logs", "deployment/workspace", "--tail=100").catch(() => ""),
+    );
+    throw e;
+  });
 step("worker reconciled the project to running");
 
 // 4. The Pod really runs in the sandbox the admission policy demands.

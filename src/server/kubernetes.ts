@@ -83,10 +83,17 @@ export class Kubernetes {
           });
           res.on("end", () => {
             if (res.statusCode === 404) return resolve(null);
-            if (!res.statusCode || res.statusCode >= 300)
-              return reject(
-                new Error(`Kubernetes ${method} ${path.split("?")[0]}: HTTP ${res.statusCode}`),
-              );
+            if (!res.statusCode || res.statusCode >= 300) {
+              const error = new Error(
+                `Kubernetes ${method} ${path.split("?")[0]}: HTTP ${res.statusCode}`,
+              ) as Error & { detail?: string };
+              // The API server's reason (quota, admission, RBAC) is for operator logs only:
+              // it can name cluster internals, so it is not part of the user-facing message.
+              try {
+                error.detail = String(JSON.parse(data).message || "").slice(0, 1000);
+              } catch {}
+              return reject(error);
+            }
             try {
               resolve(data ? JSON.parse(data) : {});
             } catch {
@@ -258,7 +265,9 @@ export function workspaceResources(
         "requests.storage": "5Gi",
         "count/services": "1",
         "count/secrets": "4",
-        "count/configmaps": "1",
+        // Kubernetes publishes kube-root-ca.crt into every namespace; with "1" the seed
+        // ConfigMap exceeded the quota (HTTP 403) and no workspace could ever start.
+        "count/configmaps": "2",
       },
     },
   });
