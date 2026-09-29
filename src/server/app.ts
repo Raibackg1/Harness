@@ -443,7 +443,7 @@ export async function createApp(config: Config, db: Database, logging = true) {
     await project(req);
     return (
       await db.query(
-        "SELECT path,content,version FROM project_files WHERE project_id=$1 ORDER BY path",
+        'SELECT path,content,version FROM project_files WHERE project_id=$1 ORDER BY path COLLATE "C"',
         [id(req)],
       )
     ).rows;
@@ -506,13 +506,16 @@ export async function createApp(config: Config, db: Database, logging = true) {
   });
   const fileRows = async (projectId: string) =>
     (
-      await db.query("SELECT path,content FROM project_files WHERE project_id=$1 ORDER BY path", [
-        projectId,
-      ])
+      await db.query(
+        'SELECT path,content FROM project_files WHERE project_id=$1 ORDER BY path COLLATE "C"',
+        [projectId],
+      )
     ).rows as { path: string; content: string }[];
   const secretRowNames = async (projectId: string) =>
     (
-      await db.query("SELECT name FROM secrets WHERE project_id=$1 ORDER BY name", [projectId])
+      await db.query('SELECT name FROM secrets WHERE project_id=$1 ORDER BY name COLLATE "C"', [
+        projectId,
+      ])
     ).rows.map((r: any) => r.name) as string[];
   // A runnable bundle, not just a code dump: the project must start on any Docker host
   // without Harness. Secret values stay behind by design; only their names travel.
@@ -644,9 +647,10 @@ export async function createApp(config: Config, db: Database, logging = true) {
   app.get("/api/projects/:id/secrets", { preHandler: auth }, async (req) => {
     await project(req);
     return (
-      await db.query("SELECT name,updated_at FROM secrets WHERE project_id=$1 ORDER BY name", [
-        id(req),
-      ])
+      await db.query(
+        'SELECT name,updated_at FROM secrets WHERE project_id=$1 ORDER BY name COLLATE "C"',
+        [id(req)],
+      )
     ).rows;
   });
   const secretName = z

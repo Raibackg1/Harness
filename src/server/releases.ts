@@ -63,11 +63,11 @@ export async function writeProjectFiles(
 }
 export async function snapshotRelease(tx: Sql, projectId: string, note: string) {
   const { rows: files } = await tx.query(
-    "SELECT path,content FROM project_files WHERE project_id=$1 ORDER BY path",
+    'SELECT path,content FROM project_files WHERE project_id=$1 ORDER BY path COLLATE "C"',
     [projectId],
   );
   const { rows: secrets } = await tx.query(
-    "SELECT name FROM secrets WHERE project_id=$1 ORDER BY name",
+    'SELECT name FROM secrets WHERE project_id=$1 ORDER BY name COLLATE "C"',
     [projectId],
   );
   const snapshot = Object.fromEntries(files.map((f: any) => [f.path, f.content]));
