@@ -1,0 +1,42 @@
+name: Kubernetes + gVisor (experimental)
+# Deploys infra/k8s into a disposable kind cluster with gVisor installed in the node and
+# drives a project through the public API (tests/k8s/e2e.mjs). No ingress, TLS or real DNS.
+on:
+  push:
+permissions:
+  contents: read
+jobs:
+  kind-gvisor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      KIND_VERSION: v0.30.0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install kind (checksum verified)
+        run: |
+          base="https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}"
+          curl -fsSLo kind "$base/kind-linux-amd64"
+          echo "$(curl -fsSL "$base/kind-linux-amd64.sha256sum" | cut -d' ' -f1)  kind" | sha256sum -c -
+          sudo install -m 0755 kind /usr/local/bin/kind
+          kubectl version --client
+      - name: Cluster, gVisor, registry, PostgreSQL and control plane
+        run: infra/ci/kind/up.sh
+      - name: Project lifecycle through the API, under gVisor
+        run: |
+          kubectl -n harness-system port-forward svc/harness-api 3000:3000 >"$RUNNER_TEMP/api-forward.log" 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:3000/readyz && break; sleep 2; done
+          API_URL=http://127.0.0.1:3000 APP_ORIGIN=https://cloud.example.com \
+            WORKSPACE_DOMAIN=workspaces.example.net node tests/k8s/e2e.mjs
+      - name: Diagnostics
+        if: failure()
+        run: |
+          kubectl get nodes,runtimeclass -o wide || true
+          kubectl get all,pvc -A -o wide || true
+          kubectl get events -A --sort-by=.lastTimestamp | tail -80 || true
+          kubectl -n harness-system logs deployment/harness-worker --tail=200 || true
+          kubectl -n harness-system logs deployment/harness-api --tail=100 || true
+          docker exec harness-e2e-control-plane journalctl -u containerd --no-pager | tail -80 || true
