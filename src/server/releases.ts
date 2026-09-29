@@ -1,11 +1,12 @@
 import type { Sql } from "./db.js";
 import { HttpError, audit } from "./contracts.js";
+import { archiveLimits } from "./bundle.js";
 // Release history of the *versioned initial files*: that content is what a workspace is
 // seeded from, so a snapshot is a real restore point for the development runtime. It is not
 // an immutable production artifact and the platform does not claim one (docs/REPLIT-GAP.md).
 export const releaseLimit = 20;
 export type ReleaseRow = {
-  id: number | string;
+  id: number;
   note: string;
   created_at: string;
   file_count: number;
@@ -46,6 +47,18 @@ export async function writeProjectFiles(
     );
     if (r.rows.length) written++;
   }
+  // The archive was checked alone; a merge can still push the project past the same limits
+  // the editor enforces. Throwing here rolls the whole transaction back.
+  const {
+    rows: [totals],
+  } = await tx.query(
+    "SELECT count(*)::int AS files, COALESCE(SUM(octet_length(content)),0)::int AS bytes FROM project_files WHERE project_id=$1",
+    [projectId],
+  );
+  if (totals.files > archiveLimits.maxFiles)
+    throw new HttpError(409, `Máximo ${archiveLimits.maxFiles} archivos iniciales.`);
+  if (totals.bytes > archiveLimits.maxTotalBytes)
+    throw new HttpError(409, "Límite de 450 KB para archivos iniciales.");
   return written;
 }
 export async function snapshotRelease(tx: Sql, projectId: string, note: string) {
@@ -73,7 +86,8 @@ export async function snapshotRelease(tx: Sql, projectId: string, note: string) 
     "DELETE FROM project_releases WHERE project_id=$1 AND id NOT IN (SELECT id FROM project_releases WHERE project_id=$1 ORDER BY id DESC LIMIT $2)",
     [projectId, releaseLimit],
   );
-  return release.id as number | string;
+  // bigserial arrives as a string from `pg` and as a number from PGlite; the API returns one type.
+  return Number(release.id);
 }
 export async function listReleases(sql: Sql, projectId: string): Promise<ReleaseRow[]> {
   const { rows } = await sql.query(
@@ -85,7 +99,7 @@ export async function listReleases(sql: Sql, projectId: string): Promise<Release
     [projectId, releaseLimit],
   );
   return rows.map((r: any) => ({
-    id: r.id,
+    id: Number(r.id),
     note: r.note,
     created_at: r.created_at,
     file_count: r.file_count,
