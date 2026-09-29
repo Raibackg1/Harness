@@ -6,6 +6,8 @@ Las definiciones activas viven en `.github/workflows/`:
 - En `ci.yml`, el job `build-workspace-image` además **arranca la imagen del entorno** con la misma postura que el Pod (uid 1000, raíz de solo lectura, sin capacidades, home vacío) y ejecuta `runtime/smoke.mjs`: salud de code-server y DeepSeek Harness, canje de ticket de un solo uso, rechazo de reutilización y de otro origen, aislamiento de cookie entre IDE y agente, y app no publicada. No incluye gVisor ni Kubernetes.
 - `postgres.yml`: suites de API, seguridad de cuenta, capacidad, rotación de clave y portabilidad (importación, versiones, restauración) sobre un servicio PostgreSQL 17.6.
 
+- `kubernetes.yml`: clúster kind desechable con gVisor en el nodo (`infra/ci/kind/up.sh`), registro local para referenciar ambas imágenes por digest, PostgreSQL desechable y `infra/k8s` aplicado; `tests/k8s/e2e.mjs` recorre un proyecto por la API pública (arranque, kernel gVisor, admisión, NetworkPolicy, IDE/agente con tickets, parada). Sin Ingress, TLS ni DNS reales. No tiene plantilla en `templates/`.
+
 `templates/` conserva copias idénticas de la primera activación. **La fuente de verdad es `.github/workflows/`**; cuando la CI haya corrido en verde en GitHub, retirar `templates/` para evitar divergencias.
 
 ## Qué significa y qué no

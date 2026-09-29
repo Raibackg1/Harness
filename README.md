@@ -133,7 +133,8 @@ Crear esas cuatro bases vacías por separado antes de ejecutar. No utilizar base
 - En esta revisión: **70 pruebas** (las anteriores más portabilidad: importación, versiones, restauración y límites) ejecutadas sobre **PostgreSQL 16 local**, y el workflow `postgres.yml` las corre sobre 17.6 en GitHub Actions.
 - Paquete real `@deepseek-ai/dsh@0.1.7-rc.2`: `web --help` y `--dump-config` con el parche de privacidad comprobados.
 - `npm audit --omit=dev`: sin vulnerabilidades conocidas reportadas al ejecutar la comprobación. No es una auditoría de seguridad de la aplicación.
-- **No comprobados aquí:** Dockerfiles construidos, ejecución de Kubernetes, CEL/admission en el servidor API, CNI, gVisor/Kata, PVC, DNS, TLS, proveedor de IA, SMTP, carga, backups o restauración en producción.
+- **Kubernetes real (kind + gVisor en GitHub Actions, `kubernetes.yml`)**: `infra/k8s` aplicado tal cual (salvo placeholders), plano de control y worker contra PostgreSQL 17.6 en el clúster; proyecto iniciado por la API, Pod bajo el kernel de gVisor, sin token de clúster, admisión que rechaza un Pod sin gVisor, NetworkPolicy que bloquea otros namespaces, IDE y agente abiertos con tickets de la API y parada. Esta prueba destapó y corrigió tres fallos que impedían arrancar cualquier entorno (política de admisión inválida, cuota de ConfigMaps y token del agente).
+- **No comprobados aquí:** Ingress/TLS/DNS reales, Kata, un clúster multi-nodo, proveedor de IA, SMTP, carga, backups o restauración en producción.
 
 La CI está en `.github/workflows/`: `ci.yml` (formato, TypeScript, pruebas, compilación, gateway, auditorías de dependencias, navegador con base aislada y construcción de las dos imágenes OCI) y `postgres.yml` (suites sobre PostgreSQL 17.6). Se activan con la rama que las introduce; **un resultado verde solo cuenta cuando aparece en GitHub Actions**, no por estar definida. Ver [infra/ci/README.md](infra/ci/README.md).
 

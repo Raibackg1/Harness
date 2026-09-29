@@ -1,4 +1,4 @@
-name: Kubernetes + gVisor (experimental)
+name: Kubernetes + gVisor
 # Deploys infra/k8s into a disposable kind cluster with gVisor installed in the node and
 # drives a project through the public API (tests/k8s/e2e.mjs). No ingress, TLS or real DNS.
 on:
