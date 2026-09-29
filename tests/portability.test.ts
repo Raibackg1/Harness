@@ -163,6 +163,44 @@ describe("release history of the seeded code", () => {
     expect(restored).toHaveLength(1);
     expect(restored[0]).toMatchObject({ path: "solo.js", content: "3\n" });
   });
+  it("never lets an editor opened before a restore or a replacing import overwrite it", async () => {
+    const files = async () => (await call("GET", `/api/projects/${projectId}/files`)).json();
+    const save = (version: number) =>
+      call("PUT", `/api/projects/${projectId}/files`, {
+        path: "solo.js",
+        content: "stale\n",
+        version,
+      });
+    await call("POST", `/api/projects/${projectId}/import`, {
+      archive: archive({ "solo.js": "Y\n" }),
+      mode: "replace",
+    });
+    const releaseY = (
+      await call("POST", `/api/projects/${projectId}/releases`, { note: "Y" })
+    ).json().id;
+    await call("POST", `/api/projects/${projectId}/import`, {
+      archive: archive({ "solo.js": "X\n" }),
+      mode: "replace",
+    });
+    const staleBeforeRestore = (await files())[0];
+    expect(staleBeforeRestore.content).toBe("X\n");
+    expect(
+      (
+        await call("POST", `/api/projects/${projectId}/releases/${releaseY}/rollback`, {
+          force: true,
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect((await save(staleBeforeRestore.version)).statusCode).toBe(409);
+    const staleBeforeImport = (await files())[0];
+    expect(staleBeforeImport.content).toBe("Y\n");
+    await call("POST", `/api/projects/${projectId}/import`, {
+      archive: archive({ "solo.js": "Z\n" }),
+      mode: "replace",
+    });
+    expect((await save(staleBeforeImport.version)).statusCode).toBe(409);
+    expect((await files())[0].content).toBe("Z\n");
+  });
   it("keeps releases private to the owner and bounded", async () => {
     expect(
       (await call("GET", `/api/projects/${projectId}/releases`, undefined, other)).statusCode,

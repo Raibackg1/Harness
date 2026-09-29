@@ -14,6 +14,40 @@ export type ReleaseRow = {
 };
 const asJson = <T>(value: unknown): T =>
   typeof value === "string" ? (JSON.parse(value) as T) : (value as T);
+// Bulk writes must keep `version` moving forward: the editor saves with optimistic
+// concurrency (`UPDATE ... WHERE version=$n`), so a delete-and-reinsert that restarted at 1
+// would let a tab opened before the write silently overwrite it. Every row written here gets
+// a version above any the project currently holds. Residual gap: a path removed in one bulk
+// write and re-added in a later one, after the project's highest version also disappeared,
+// can reuse a number; closing that needs a per-project counter (schema change).
+export async function writeProjectFiles(
+  tx: Sql,
+  projectId: string,
+  files: Record<string, string>,
+  mode: "replace" | "merge",
+) {
+  const {
+    rows: [{ next }],
+  } = await tx.query(
+    "SELECT COALESCE(MAX(version),0)+1 AS next FROM project_files WHERE project_id=$1",
+    [projectId],
+  );
+  const paths = Object.keys(files);
+  if (mode === "replace")
+    await tx.query("DELETE FROM project_files WHERE project_id=$1 AND NOT (path = ANY($2))", [
+      projectId,
+      paths,
+    ]);
+  let written = 0;
+  for (const [path, content] of Object.entries(files)) {
+    const r = await tx.query(
+      "INSERT INTO project_files(project_id,path,content,version) VALUES ($1,$2,$3,$4) ON CONFLICT(project_id,path) DO UPDATE SET content=EXCLUDED.content, version=GREATEST(project_files.version+1,EXCLUDED.version) RETURNING version",
+      [projectId, path, content, Number(next)],
+    );
+    if (r.rows.length) written++;
+  }
+  return written;
+}
 export async function snapshotRelease(tx: Sql, projectId: string, note: string) {
   const { rows: files } = await tx.query(
     "SELECT path,content FROM project_files WHERE project_id=$1 ORDER BY path",
@@ -88,13 +122,7 @@ export async function restoreRelease(
       409,
       "El estado actual difiere de esa versión y se perdería. Confirma el reemplazo total para restaurar.",
     );
-  await tx.query("DELETE FROM project_files WHERE project_id=$1", [opts.projectId]);
-  for (const [path, content] of entries)
-    await tx.query("INSERT INTO project_files(project_id,path,content) VALUES ($1,$2,$3)", [
-      opts.projectId,
-      path,
-      content,
-    ]);
+  await writeProjectFiles(tx, opts.projectId, files, "replace");
   await tx.query("UPDATE projects SET updated_at=now() WHERE id=$1", [opts.projectId]);
   await audit(tx, opts.userId, "release.restored", opts.projectId, release.note);
   return { files: entries.length, replaced: differs };

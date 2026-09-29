@@ -239,7 +239,8 @@ export function ProjectView({
 }) {
   const [tab, setTab] = useState("files"),
     [busy, setBusy] = useState(""),
-    [deleting, setDeleting] = useState(false);
+    [deleting, setDeleting] = useState(false),
+    [filesRevision, setFilesRevision] = useState(0);
   useEffect(() => {
     setTab("files");
   }, [projectId]);
@@ -381,8 +382,12 @@ export function ProjectView({
       </div>
       {tab === "files" ? (
         <>
-          <FileEditor project={p} notify={notify} />
-          <ReleasesPanel project={p} notify={notify} />
+          <FileEditor key={filesRevision} project={p} notify={notify} />
+          <ReleasesPanel
+            project={p}
+            notify={notify}
+            onRestored={() => setFilesRevision((n) => n + 1)}
+          />
         </>
       ) : tab === "runtime" ? (
         <>
@@ -524,7 +529,15 @@ interface SourceFile {
   content: string;
   version: number;
 }
-function ReleasesPanel({ project, notify }: { project: Project; notify: Notify }) {
+function ReleasesPanel({
+  project,
+  notify,
+  onRestored,
+}: {
+  project: Project;
+  notify: Notify;
+  onRestored: () => void;
+}) {
   const [rows, setRows] = useState<any[] | null>(null),
     [note, setNote] = useState(""),
     [busy, setBusy] = useState("");
@@ -545,7 +558,6 @@ function ReleasesPanel({ project, notify }: { project: Project; notify: Notify }
     setBusy("new");
     try {
       await api(`/projects/${project.id}/releases`, send("POST", { note }));
-      e.currentTarget.reset();
       setNote("");
       notify("Instantánea guardada.");
       await load();
@@ -561,6 +573,7 @@ function ReleasesPanel({ project, notify }: { project: Project; notify: Notify }
       api(`/projects/${project.id}/releases/${row.id}/rollback`, send("POST", { force }));
     try {
       await call(false);
+      onRestored();
       notify("Versión restaurada en el código inicial.");
     } catch (e) {
       const message = (e as Error).message;
@@ -571,6 +584,7 @@ function ReleasesPanel({ project, notify }: { project: Project; notify: Notify }
       }
       try {
         await call(true);
+        onRestored();
         notify("Versión restaurada en el código inicial.");
       } catch (second) {
         notify((second as Error).message, true);

@@ -22,7 +22,7 @@ import { templates, type TemplateId } from "../shared/templates.js";
 import { HttpError, audit, type User, type Account } from "./contracts.js";
 import { consumeFactor } from "./mfa.js";
 import { bundleExtras, readArchive } from "./bundle.js";
-import { listReleases, restoreRelease, snapshotRelease } from "./releases.js";
+import { listReleases, restoreRelease, snapshotRelease, writeProjectFiles } from "./releases.js";
 import { registerSecurityRoutes } from "./security-routes.js";
 import { changeRuntime, capacityReport } from "./runtime-policy.js";
 import {
@@ -552,16 +552,7 @@ export async function createApp(config: Config, db: Database, logging = true) {
           409,
           "Los archivos activos se editan en el IDE. Esta importación escribe el código inicial.",
         );
-      if (input.mode === "replace")
-        await tx.query("DELETE FROM project_files WHERE project_id=$1", [p.id]);
-      let imported = 0;
-      for (const [path, content] of Object.entries(read.files)) {
-        const r = await tx.query(
-          "INSERT INTO project_files(project_id,path,content) VALUES ($1,$2,$3) ON CONFLICT(project_id,path) DO UPDATE SET content=EXCLUDED.content, version=project_files.version+1 RETURNING version",
-          [p.id, path, content],
-        );
-        if (r.rows.length) imported++;
-      }
+      const imported = await writeProjectFiles(tx, p.id, read.files, input.mode);
       await tx.query("UPDATE projects SET updated_at=now() WHERE id=$1", [p.id]);
       await audit(
         tx,
