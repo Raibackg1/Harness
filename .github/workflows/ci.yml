@@ -1,0 +1,52 @@
+name: Validate platform
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run check
+      - run: npm ci --prefix runtime && npm test --prefix runtime
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm audit --prefix runtime --omit=dev --audit-level=high
+      - run: npx playwright install --with-deps chromium
+      # playwright.config.ts starts its own server on a wiped, throwaway embedded database.
+      - name: Browser workflows against isolated storage
+        run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-results
+          path: test-results
+          retention-days: 7
+  build-control-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: harness-control:ci
+  build-workspace-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: runtime/Dockerfile
+          push: false
+          tags: harness-workspace:ci
